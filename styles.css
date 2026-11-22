@@ -151,6 +151,8 @@ details summary { cursor: pointer; font-weight: 700; color: var(--ana); padding:
 .cip { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 99px; background: var(--kart-2); color: var(--metin); }
 .cip.yesil { background: color-mix(in srgb, var(--artı) 18%, transparent); color: var(--artı); }
 .cip.sari { background: var(--vurgu-acik); color: var(--metin); }
+.cip.kirmizi { background: color-mix(in srgb, var(--eksi) 16%, transparent); color: var(--eksi); }
+.tablo tr.toplam td { border-top: 2px solid var(--cizgi); background: var(--kart-2); }
 
 .bildirim { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 10;
   background: var(--metin); color: var(--zemin); padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100vw - 32px); box-shadow: var(--golge); }

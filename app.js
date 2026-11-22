@@ -12,8 +12,8 @@ const depo = {
   sil(k) { try { localStorage.removeItem(ON + k); } catch { /* yok */ } }
 };
 const VARSAYILAN_AYAR = { agirlik: { Kalite: 25, 'Değer': 25, 'Büyüme': 25, Risk: 25 }, ustSinir: 30, fkKaynak: 'ttm',
-  iskonto: 10, kalici: 3, yil: 10, hatirlatGun: 7, demo: false, tema: 'auto' };
-function ayarlar() { const a = depo.al('ayar', {}); return { ...VARSAYILAN_AYAR, ...a, agirlik: { ...VARSAYILAN_AYAR.agirlik, ...(a.agirlik || {}) } }; }
+  iskonto: 10, kalici: 3, yil: 10, hatirlatGun: 7, demo: false, tema: 'auto', senAgirlik: { kot: 20, baz: 60, iyi: 20 } };
+function ayarlar() { const a = depo.al('ayar', {}); return { ...VARSAYILAN_AYAR, ...a, agirlik: { ...VARSAYILAN_AYAR.agirlik, ...(a.agirlik || {}) }, senAgirlik: { ...VARSAYILAN_AYAR.senAgirlik, ...(a.senAgirlik || {}) } }; }
 function ayarKaydet(degisen) { const a = { ...ayarlar(), ...degisen }; depo.koy('ayar', a); return a; }
 function anahtar() { return depo.al('anahtar', ''); }
 function pozisyonlar() { return depo.al('poz', []); }
@@ -167,6 +167,8 @@ function senaryolar(m, fiyat, a) {
   const fkIleri = ilk(m, ['forwardPE']);
   const g3 = [m.epsGrowth3Y, m.revenueGrowth3Y].filter(sayiMi);
   const gHam = g3.length ? Math.min(...g3) / 100 : null;
+  const gKaynak = sayiMi(m.epsGrowth3Y) && sayiMi(m.revenueGrowth3Y) ? (m.epsGrowth3Y <= m.revenueGrowth3Y ? 'EPS 3Y (gelirden düşük)' : 'gelir 3Y (EPS\'ten düşük)')
+    : sayiMi(m.revenueGrowth3Y) ? 'yalnızca gelir 3Y — EPS 3Y verisi yok' : sayiMi(m.epsGrowth3Y) ? 'yalnızca EPS 3Y — gelir 3Y verisi yok' : 'büyüme verisi yok — %0 varsayıldı';
   const g = sayiMi(gHam) ? Math.max(-0.3, Math.min(a.ustSinir / 100, gHam)) : 0;
   const fk = a.fkKaynak === 'ileri' && sayiMi(fkIleri) && fkIleri > 0 ? fkIleri : fkTtm;
   const satir = (ad, b, carpan) => {
@@ -175,15 +177,46 @@ function senaryolar(m, fiyat, a) {
     const hedef = hEps !== null && hFk !== null ? hEps * hFk : null;
     return { ad, b, fk: hFk, eps: hEps, hedef, pot: hedef !== null && sayiMi(fiyat) ? hedef / fiyat - 1 : null };
   };
-  return { eps, fkTtm, fkIleri, gHam, g, fk,
-    satirlar: [satir('🐻 Kötümser', g - 0.1, 0.75), satir('⚖️ Baz', g, 1), satir('🐂 İyimser', g + 0.1, 1.2)] };
+  const satirlar = [satir('🐻 Kötümser', g - 0.1, 0.75), satir('⚖️ Baz', g, 1), satir('🐂 İyimser', g + 0.1, 1.2)];
+  // Beklenen değer: senaryoların ağırlıklı ortalaması (ağırlıklar Ayarlar'dan; varsayılan 20/60/20).
+  const w = [a.senAgirlik.kot, a.senAgirlik.baz, a.senAgirlik.iyi].map(Number);
+  const wt = w.reduce((x, y) => x + (y > 0 ? y : 0), 0);
+  const beklenen = satirlar.every(s => s.hedef !== null) && wt > 0 ? satirlar.reduce((x, s, i) => x + s.hedef * Math.max(0, w[i]), 0) / wt : null;
+  return { eps, fkTtm, fkIleri, gHam, g, gKaynak, fk, satirlar, beklenen, beklenenPot: beklenen !== null && sayiMi(fiyat) ? beklenen / fiyat - 1 : null };
+}
+
+/**
+ * Basit DCF ile hisse başı değer (kendi yöntemimiz): FCF, `yil` boyunca
+ * MIN(gelir 3Y, üst sınır) hızında büyür, sonra kalıcı büyüme. Firma değerinden
+ * net borç (EV − piyasa değeri) düşülür, hisse başına çevrilir.
+ */
+function basitDcf(m, fiyat, ev, pd, fcf, a) {
+  if (!sayiMi(fcf) || !(fcf > 0) || !(pd > 0) || !sayiMi(fiyat) || !(a.iskonto > a.kalici)) return null;
+  const gr = sayiMi(m.revenueGrowth3Y) ? m.revenueGrowth3Y / 100 : 0;
+  const g = Math.max(-0.1, Math.min(a.ustSinir / 100, gr));
+  const firma = dcfDeger(fcf, g, a.iskonto / 100, a.kalici / 100, a.yil);
+  const ozkaynak = firma - ((ev ?? pd) - pd);
+  return { g, hisseBasi: ozkaynak / pd * fiyat };
+}
+
+/** Tutarlılık: F/K'ya dayalı baz hedef ile nakit akışına dayalı değer ne kadar uyuşuyor? */
+function tutarlilik(baz, dcf) {
+  if (!sayiMi(baz) || !dcf || !sayiMi(dcf.hisseBasi)) return { seviye: 'Belirsiz', sinif: '', aciklama: 'İki yöntemi karşılaştırmak için yeterli veri yok (FCF negatif ya da F/K yok).' };
+  if (dcf.hisseBasi <= 0) return { seviye: 'Düşük', sinif: 'kirmizi', oran: null, aciklama: 'Nakit akışına dayalı değer sıfırın altında; F/K hedefi tek başına yanıltıcı olabilir.' };
+  // Kat farkı (yön bağımsız): 1,5 kata kadar yüksek, 2,5 kata kadar orta, üstü düşük tutarlılık.
+  const oran = baz / dcf.hisseBasi;
+  const kat = oran >= 1 ? oran : 1 / oran;
+  const yon = 'F/K hedefi (' + usd(baz) + '), nakit akışına dayalı değerin (' + usd(dcf.hisseBasi) + ') ' + nf(1).format(kat) + ' katı ' + (oran >= 1 ? 'üstünde' : 'altında');
+  if (kat <= 1.5) return { seviye: 'Yüksek', sinif: 'yesil', oran, aciklama: 'İki yöntem birbirine yakın: ' + yon + '.' };
+  if (kat <= 2.5) return { seviye: 'Orta', sinif: 'sari', oran, aciklama: 'Yöntemler kısmen ayrışıyor: ' + yon + '.' };
+  return { seviye: 'Düşük', sinif: 'kirmizi', oran, aciklama: 'Yöntemler çok ayrışıyor: ' + yon + '. Hedefleri temkinli okuyun.' };
 }
 
 /** Reverse DCF: bugünkü değeri haklı çıkarmak için FCF'nin yıllık kaç büyümesi gerekir (ikiye bölme). */
 function dcfDeger(fcf, g, r, tg, n) { let pv = 0, cf = fcf; for (let t = 1; t <= n; t++) { cf *= 1 + g; pv += cf / Math.pow(1 + r, t); } return pv + cf * (1 + tg) / (r - tg) / Math.pow(1 + r, n); }
 function reverseDcf(deger, fcf, r, tg, n) {
   if (!(deger > 0)) return { hata: 'Değer yok' };
-  if (!(fcf > 0)) return { hata: 'FCF negatif/yok: hesaplanamaz' };
+  if (!sayiMi(fcf) || !(fcf > 0)) return { hata: 'FCF negatif/yok: hesaplanamaz' };
   if (!(r > tg)) return { hata: 'İskonto > kalıcı büyüme olmalı' };
   let lo = -0.5, hi = 1.5;
   if (dcfDeger(fcf, hi, r, tg, n) < deger) return { hata: '%150\'den fazla' };
@@ -344,6 +377,9 @@ function analizCiz(el, t, m, q, pr, kz) {
   const pFcf = ilk(m, ['pfcfShareTTM', 'pfcfShareAnnual']);
   const fcf = ev !== null && sayiMi(evFcf) && evFcf !== 0 ? ev / evFcf : pd !== null && sayiMi(pFcf) && pFcf !== 0 ? pd / pFcf : null;
   const rd = reverseDcf(ev ?? pd, fcf, a.iskonto / 100, a.kalici / 100, a.yil);
+  const dcf = basitDcf(m, fiyat, ev, pd, fcf, a);
+  const baz = sen.satirlar[1].hedef;
+  const tut = tutarlilik(baz, dcf);
   const g3 = sayiMi(m.revenueGrowth3Y) ? m.revenueGrowth3Y / 100 : null;
   const rdYorum = !sayiMi(rd.g) ? '' : g3 === null ? 'Karşılaştırma için geçmiş büyüme verisi yok.'
     : rd.g > g3 + 0.05 ? 'Piyasa, son 3 yılın gelir büyümesinden daha hızlı bir büyüme fiyatlıyor: beklentiler yüksek.'
@@ -381,9 +417,11 @@ function analizCiz(el, t, m, q, pr, kz) {
   <div class="kart">
     <h2>🎯 Senaryolu hedef fiyat <small>· 1 yıllık</small></h2>
     ${sayiMi(sen.eps) && sen.eps <= 0 ? '<div class="uyari">⚠️ EPS negatif: F/K yöntemi bu hisse için anlamlı değil; reverse DCF\'ye bakın.</div>' : ''}
+    <p style="margin:0 0 10px"><span class="cip ${tut.sinif}">Tutarlılık: ${tut.seviye}</span>
+      <span class="alt" style="display:block;margin-top:4px">${esc(tut.aciklama)}</span></p>
     <div class="uc" style="margin-bottom:10px">
       <div><div class="etiket">EPS (12 ay)</div><div class="sayi">${usd(sen.eps)}</div></div>
-      <div><div class="etiket">Baz büyüme</div><div class="sayi">${yuzde(sen.g)}</div><div class="alt">${sayiMi(sen.gHam) && sen.gHam !== sen.g ? 'ham ' + yuzde(sen.gHam) + ', sınırlandı' : 'EPS/gelir 3Y düşüğü'}</div></div>
+      <div><div class="etiket">Baz büyüme</div><div class="sayi">${yuzde(sen.g)}</div><div class="alt">${esc(sen.gKaynak)}${sayiMi(sen.gHam) && sen.gHam !== sen.g ? ' · ham ' + yuzde(sen.gHam) + ', sınırlandı' : ''}</div></div>
       <div><div class="etiket">F/K</div><div class="sayi">${sayi(sen.fk)}</div><div class="alt">${a.fkKaynak === 'ileri' && sen.fk === sen.fkIleri ? 'ileri' : 'son 12 ay'}</div></div>
     </div>
     <div class="iki">
@@ -392,8 +430,9 @@ function analizCiz(el, t, m, q, pr, kz) {
     </div>
     <div class="kaydir"><table class="tablo"><thead><tr><th>Senaryo</th><th>Büyüme</th><th>F/K</th><th>Hedef</th><th>Potansiyel</th></tr></thead><tbody>
       ${sen.satirlar.map(s => `<tr><td>${s.ad}</td><td>${yuzde(s.b)}</td><td>${sayi(s.fk)}</td><td><b>${usd(s.hedef)}</b></td><td class="${renk(s.pot)}"><b>${yuzde(s.pot)}</b></td></tr>`).join('')}
+      <tr class="toplam"><td colspan="3"><b>Beklenen değer</b> <span class="alt">${a.senAgirlik.kot}/${a.senAgirlik.baz}/${a.senAgirlik.iyi}</span></td><td><b>${usd(sen.beklenen)}</b></td><td class="${renk(sen.beklenenPot)}"><b>${yuzde(sen.beklenenPot)}</b></td></tr>
     </tbody></table></div>
-    <p class="alt" style="margin:8px 0 0">Kötümser: −10 puan büyüme, F/K ×0,75 · İyimser: +10 puan, F/K ×1,2. İleri F/K gelecek yılın kârını zaten içerdiği için hedefi düşük gösterir; en kötümser ölçü olarak okuyun.</p>
+    <p class="alt" style="margin:8px 0 0">Kötümser: −10 puan büyüme, F/K ×0,75 · İyimser: +10 puan, F/K ×1,2. Beklenen değer = senaryoların ağırlıklı ortalaması (ağırlıklar Ayarlar'dan). İleri F/K gelecek yılın kârını zaten içerdiği için hedefi düşük gösterir; en kötümser ölçü olarak okuyun.</p>
   </div>
 
   <div class="kart">
@@ -408,7 +447,12 @@ function analizCiz(el, t, m, q, pr, kz) {
       <label>Kalıcı büy. (%)<input type="number" id="kalici" value="${a.kalici}" step="0.5" inputmode="decimal"></label>
       <label>Yıl<input type="number" id="yil" value="${a.yil}" step="1" min="1" max="30" inputmode="numeric"></label>
     </div>
-    <div class="bilgi" style="margin:0"><b>Fiyatlanan yıllık FCF büyümesi: ${sayiMi(rd.g) ? yuzde(rd.g) : esc(rd.hata)}</b>${rdYorum ? '<br>' + rdYorum : ''}</div>
+    <div class="bilgi"><b>Fiyatlanan yıllık FCF büyümesi: ${sayiMi(rd.g) ? yuzde(rd.g) : esc(rd.hata)}</b>${rdYorum ? '<br>' + rdYorum : ''}</div>
+    <div class="iki" style="margin:0">
+      <div><div class="etiket">Nakit akışına dayalı değer</div><div class="sayi"><b>${dcf ? usd(dcf.hisseBasi) : '—'}</b></div>
+        <div class="alt">${dcf && sayiMi(fiyat) ? yuzde(dcf.hisseBasi / fiyat - 1) + ' fiyata göre' : 'FCF negatif/yok'}</div></div>
+      <div><div class="etiket">Varsayım</div><div class="alt">${dcf ? 'FCF ' + a.yil + ' yıl ' + yuzde(dcf.g) + ' büyür (gelir 3Y, üst sınırlı), sonra ' + yuzde(a.kalici / 100, 1, false) + '; iskonto ' + yuzde(a.iskonto / 100, 1, false) : '—'}</div></div>
+    </div>
   </div>
 
   <div class="kart"><h2>📅 Son çeyrek kâr sonuçları</h2>${kz.length ? `<div class="kaydir"><table class="tablo"><thead><tr><th>Dönem</th><th>Beklenti</th><th>Gerçekleşen</th><th>Sürpriz</th></tr></thead><tbody>
@@ -524,6 +568,12 @@ function ekranAyarlar(main) {
 
   <form class="kart" id="f-agirlik"><h2>Puan ağırlıkları <small>· kendi yöntemimiz</small></h2>
     <div class="iki">${BOYUTLAR.map(b => `<label>${b}<input type="number" name="${b}" value="${a.agirlik[b]}" min="0" max="100" step="1" inputmode="numeric"></label>`).join('')}</div>
+    <p class="etiket" style="margin:4px 0 6px">Beklenen değer: senaryo ağırlıkları</p>
+    <div class="uc">
+      <label>Kötümser<input type="number" name="sKot" value="${a.senAgirlik.kot}" min="0" max="100" step="1" inputmode="numeric"></label>
+      <label>Baz<input type="number" name="sBaz" value="${a.senAgirlik.baz}" min="0" max="100" step="1" inputmode="numeric"></label>
+      <label>İyimser<input type="number" name="sIyi" value="${a.senAgirlik.iyi}" min="0" max="100" step="1" inputmode="numeric"></label>
+    </div>
     <label>Takvimde vurgulanacak gün sayısı<input type="number" name="hatirlatGun" value="${a.hatirlatGun}" min="1" max="60" step="1" inputmode="numeric"></label>
     <label>Tema<select name="tema"><option value="auto"${a.tema === 'auto' ? ' selected' : ''}>Cihaza göre</option><option value="light"${a.tema === 'light' ? ' selected' : ''}>Açık</option><option value="dark"${a.tema === 'dark' ? ' selected' : ''}>Koyu</option></select></label>
     <div class="dugmeler"><button class="dugme" type="submit">Kaydet</button><button class="dugme ikincil" type="button" id="sifirla">Varsayılana dön</button></div>
@@ -553,9 +603,11 @@ function ekranAyarlar(main) {
     e.preventDefault(); const f = e.target, ag = {};
     for (const b of BOYUTLAR) { const v = Number(f[b].value); if (!(v >= 0)) { bildir(b + ' ağırlığı geçersiz.'); return; } ag[b] = v; }
     if (!Object.values(ag).some(v => v > 0)) { bildir('En az bir ağırlık 0\'dan büyük olmalı.'); return; }
-    ayarKaydet({ agirlik: ag, hatirlatGun: Math.max(1, Number(f.hatirlatGun.value) || 7), tema: f.tema.value }); temaUygula(); bildir('Kaydedildi.');
+    const sen = { kot: Number(f.sKot.value), baz: Number(f.sBaz.value), iyi: Number(f.sIyi.value) };
+    if (!Object.values(sen).every(v => v >= 0) || !Object.values(sen).some(v => v > 0)) { bildir('Senaryo ağırlıkları geçersiz.'); return; }
+    ayarKaydet({ agirlik: ag, senAgirlik: sen, hatirlatGun: Math.max(1, Number(f.hatirlatGun.value) || 7), tema: f.tema.value }); temaUygula(); bildir('Kaydedildi.');
   };
-  $('#sifirla', main).onclick = () => { ayarKaydet({ agirlik: { ...VARSAYILAN_AYAR.agirlik }, hatirlatGun: 7, tema: 'auto' }); temaUygula(); yonlendir(); bildir('Varsayılanlar yüklendi.'); };
+  $('#sifirla', main).onclick = () => { ayarKaydet({ agirlik: { ...VARSAYILAN_AYAR.agirlik }, senAgirlik: { ...VARSAYILAN_AYAR.senAgirlik }, hatirlatGun: 7, tema: 'auto' }); temaUygula(); yonlendir(); bildir('Varsayılanlar yüklendi.'); };
   $('#disa', main).onclick = () => {
     const veri = { uygulama: 'Borsa Defteri', surum: 1, tarih: new Date().toISOString(), pozisyonlar: pozisyonlar(), ayarlar: ayarlar() };
     const url = URL.createObjectURL(new Blob([JSON.stringify(veri, null, 2)], { type: 'application/json' }));
