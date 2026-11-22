@@ -79,7 +79,9 @@ function fh(yol, param, sure, yenile = false) {
   const is = kuyruk.then(async () => {
     const bekle = 1100 - (Date.now() - sonIstek); if (bekle > 0) await new Promise(r => setTimeout(r, bekle));
     sonIstek = Date.now();
-    const r = await fetch(`https://finnhub.io/api/v1${yol}?${qs}&token=${encodeURIComponent(key)}`);
+    let r;
+    try { r = await fetch(`https://finnhub.io/api/v1${yol}?${qs}&token=${encodeURIComponent(key)}`); }
+    catch { throw new Error('Finnhub\'a ulaşılamadı (bağlantı ya da dakikalık sınır). Biraz sonra ↻ ile yenileyin.'); }
     if (r.status === 429) throw new Error('Finnhub dakikalık sınır aşıldı; 1 dakika sonra yenileyin.');
     if (r.status === 401 || r.status === 403) throw new Error(yol.includes('congress') ? 'Ücretli uç nokta.' : 'Finnhub anahtarı geçersiz ya da bu veri ücretli (HTTP ' + r.status + ').');
     if (!r.ok) throw new Error('Finnhub hatası: HTTP ' + r.status);
@@ -197,6 +199,18 @@ function basitDcf(m, fiyat, ev, pd, fcf, a) {
   const firma = dcfDeger(fcf, g, a.iskonto / 100, a.kalici / 100, a.yil);
   const ozkaynak = firma - ((ev ?? pd) - pd);
   return { g, hisseBasi: ozkaynak / pd * fiyat };
+}
+
+/**
+ * Veri kontrolü (kendi kurallarımız): Finnhub verisi kendi içinde çelişiyorsa nedenleri döndürür.
+ * F/K 3'ün altında · FCF piyasa değerinden büyük · DCF değeri fiyatın 10 katından fazla.
+ */
+function veriKontrol(fkTtm, pd, fcf, dcf, fiyat) {
+  const n = [];
+  if (sayiMi(fkTtm) && fkTtm > 0 && fkTtm < 3) n.push('F/K 3\'ün altında (' + sayi(fkTtm) + ')');
+  if (sayiMi(fcf) && sayiMi(pd) && pd > 0 && fcf > pd) n.push('serbest nakit akışı piyasa değerinden büyük');
+  if (dcf && sayiMi(dcf.hisseBasi) && sayiMi(fiyat) && fiyat > 0 && dcf.hisseBasi > 10 * fiyat) n.push('nakit akışına dayalı değer fiyatın 10 katından fazla');
+  return n;
 }
 
 /** Tutarlılık: F/K'ya dayalı baz hedef ile nakit akışına dayalı değer ne kadar uyuşuyor? */
@@ -380,6 +394,9 @@ function analizCiz(el, t, m, q, pr, kz) {
   const dcf = basitDcf(m, fiyat, ev, pd, fcf, a);
   const baz = sen.satirlar[1].hedef;
   const tut = tutarlilik(baz, dcf);
+  const sorunlar = veriKontrol(sen.fkTtm, pd, fcf, dcf, fiyat);
+  const veriUyari = sorunlar.length ? `<div class="uyari kirmizi-kutu" role="alert"><b>⚠️ Veri tutarsız görünüyor</b> — ${esc(sorunlar.join(' · '))}.
+    Finnhub verisinde hata olabilir (ör. yeni ayrılan şirketlerde ölçek sorunu). Hedefleri ve değerlemeleri kullanmayın.</div>` : '';
   const g3 = sayiMi(m.revenueGrowth3Y) ? m.revenueGrowth3Y / 100 : null;
   const rdYorum = !sayiMi(rd.g) ? '' : g3 === null ? 'Karşılaştırma için geçmiş büyüme verisi yok.'
     : rd.g > g3 + 0.05 ? 'Piyasa, son 3 yılın gelir büyümesinden daha hızlı bir büyüme fiyatlıyor: beklentiler yüksek.'
@@ -387,7 +404,7 @@ function analizCiz(el, t, m, q, pr, kz) {
     : 'Piyasanın fiyatladığı büyüme, son 3 yılın gelir büyümesine yakın.';
   const cubuk = v => `<div class="cubuk"><i class="${v === null ? '' : v < 40 ? 'zayif' : v < 70 ? 'orta' : ''}" style="width:${v ?? 0}%"></i></div>`;
 
-  el.innerHTML = `
+  el.innerHTML = `${veriUyari}
   <div class="kart">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div><h2 style="margin:0;font-size:19px;color:var(--metin)">${esc(pr.name || t)}</h2>
@@ -417,6 +434,7 @@ function analizCiz(el, t, m, q, pr, kz) {
   <div class="kart">
     <h2>🎯 Senaryolu hedef fiyat <small>· 1 yıllık</small></h2>
     ${sayiMi(sen.eps) && sen.eps <= 0 ? '<div class="uyari">⚠️ EPS negatif: F/K yöntemi bu hisse için anlamlı değil; reverse DCF\'ye bakın.</div>' : ''}
+    ${sorunlar.length ? '<p style="margin:0 0 8px"><span class="cip kirmizi">⚠️ Veri tutarsız — hedefler güvenilir değil</span></p>' : ''}
     <p style="margin:0 0 10px"><span class="cip ${tut.sinif}">Tutarlılık: ${tut.seviye}</span>
       <span class="alt" style="display:block;margin-top:4px">${esc(tut.aciklama)}</span></p>
     <div class="uc" style="margin-bottom:10px">

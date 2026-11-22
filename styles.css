@@ -152,6 +152,7 @@ details summary { cursor: pointer; font-weight: 700; color: var(--ana); padding:
 .cip.yesil { background: color-mix(in srgb, var(--artı) 18%, transparent); color: var(--artı); }
 .cip.sari { background: var(--vurgu-acik); color: var(--metin); }
 .cip.kirmizi { background: color-mix(in srgb, var(--eksi) 16%, transparent); color: var(--eksi); }
+.uyari.kirmizi-kutu { background: color-mix(in srgb, var(--eksi) 14%, var(--kart)); border: 1px solid color-mix(in srgb, var(--eksi) 45%, transparent); }
 .tablo tr.toplam td { border-top: 2px solid var(--cizgi); background: var(--kart-2); }
 
 .bildirim { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 10;
