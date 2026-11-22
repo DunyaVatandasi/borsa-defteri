@@ -1,5 +1,5 @@
 // Uygulama kabuğunu önbelleğe alır (çevrimdışı açılış). Finnhub istekleri her zaman ağdan gider.
-const SURUM = 'defter-v3';
+const SURUM = 'defter-v4'; // app.js UYGULAMA_SURUM.no ile aynı tutun
 const KABUK = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg'];
 
 self.addEventListener('install', e => {
@@ -11,6 +11,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return; // Finnhub: dokunma
+  if (url.pathname.endsWith('/sw.js')) return; // sürüm kontrolü her zaman doğrudan ağdan
   // Önce ağ (güncel sürüm), ağ yoksa önbellek.
   e.respondWith(fetch(e.request).then(r => {
     const kopya = r.clone(); caches.open(SURUM).then(c => c.put(e.request, kopya)); return r;

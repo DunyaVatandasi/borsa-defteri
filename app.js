@@ -4,6 +4,9 @@
  */
 'use strict';
 
+// Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
+const UYGULAMA_SURUM = { no: 4, tarih: '23.11.2026' };
+
 // ---------------------------------------------------------------- depolama
 const ON = 'bd.';
 const depo = {
@@ -608,7 +611,12 @@ function ekranAyarlar(main) {
       <button class="dugme tehlike" type="button" id="hepsini-sil">Tüm verileri sil</button></div>
     <p class="alt">Veriler 6 saat önbellekte tutulur (fiyat 1 dakika). Ücretsiz Finnhub: dakikada ~60 istek.</p>
   </div>
+  <div class="kart"><h2>Sürüm</h2>
+    <p style="margin:0"><b>Borsa Defteri v${UYGULAMA_SURUM.no}</b> <span class="alt">· ${UYGULAMA_SURUM.tarih}</span></p>
+    <p class="alt" id="surum-durum" style="margin:6px 0 0">Kontrol ediliyor…</p>
+  </div>
   <p class="alt">Puanlar, hedefler ve takvim kendi yöntemimizdir; eğitim ve kişisel takip amaçlıdır, yatırım tavsiyesi değildir.</p>`;
+  surumKontrol($('#surum-durum', main));
 
   $('#f-anahtar', main).onsubmit = e => {
     e.preventDefault(); const v = $('#anahtar', main).value.trim();
@@ -651,6 +659,20 @@ function ekranAyarlar(main) {
     try { Object.keys(localStorage).filter(k => k.startsWith(ON)).forEach(k => localStorage.removeItem(k)); } catch { /* yok */ }
     bellek.clear(); temaUygula(); bildir('Tüm veriler silindi.'); location.hash = 'portfoy'; yonlendir();
   };
+}
+
+/** Yayındaki sürümü (sw.js) okuyup bu cihazdakiyle karşılaştırır. */
+async function surumKontrol(el) {
+  if (!el) return;
+  try {
+    const r = await fetch('sw.js?k=' + Date.now(), { cache: 'no-store' });
+    const m = (await r.text()).match(/defter-v(\d+)/);
+    const yayin = m ? Number(m[1]) : null;
+    if (yayin === null) { el.textContent = 'Yayındaki sürüm okunamadı.'; return; }
+    if (yayin === UYGULAMA_SURUM.no) el.innerHTML = '<span class="cip yesil">✅ Güncel</span> <span>yayındaki sürüm de v' + yayin + '</span>';
+    else if (yayin > UYGULAMA_SURUM.no) el.innerHTML = '<span class="cip sari">Yeni sürüm var: v' + yayin + '</span> Uygulamayı tamamen kapatıp yeniden aç.';
+    else el.textContent = 'Yayındaki sürüm: v' + yayin;
+  } catch { el.textContent = 'Çevrimdışı: yayındaki sürüm kontrol edilemedi.'; }
 }
 
 function temaUygula() { const t = ayarlar().tema; if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); }
