@@ -5,7 +5,9 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 4, tarih: '23.11.2026' };
+const UYGULAMA_SURUM = { no: 5, tarih: '23.11.2026' };
+// ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
+const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
 // ---------------------------------------------------------------- depolama
 const ON = 'bd.';
@@ -243,7 +245,7 @@ function reverseDcf(deger, fcf, r, tg, n) {
 }
 
 // ---------------------------------------------------------------- yönlendirme
-const EKRANLAR = { portfoy: ekranPortfoy, analiz: ekranAnaliz, takvim: ekranTakvim, insider: ekranInsider, ayarlar: ekranAyarlar };
+const EKRANLAR = { portfoy: ekranPortfoy, analiz: ekranAnaliz, takvim: ekranTakvim, insider: ekranInsider, orb: ekranOrb, ayarlar: ekranAyarlar };
 let aktif = { ad: '', param: '', yenile: false };
 
 function yonlendir(yenile = false) {
@@ -571,6 +573,67 @@ async function ekranInsider(main, _p, yenile) {
       <div class="sag">${s.o ? `<div class="kod ${renk(s.o.net)}">${usdIsaretli(s.o.net / 1e6, 1)} Mn</div><div class="alt">net</div>` : ''}</div></li>`).join('')}</ul>`;
 }
 
+// ---------------------------------------------------------------- ORB TARAMASI
+const orbAdres = () => depo.al('orbAdres', '') || ORB_ADRES;
+const orbKod = h => String(h).replace('-', '.'); // Yahoo BRK-B → Finnhub BRK.B
+const etTarih = z => { const [g, s] = String(z || '').split(' '); return g ? tarihTR(g) + ' ' + (s || '') : '—'; };
+function onceSure(iso) {
+  const dk = Math.round((Date.now() - new Date(iso).getTime()) / 6e4);
+  if (!Number.isFinite(dk)) return '';
+  if (dk < 1) return 'az önce'; if (dk < 60) return dk + ' dk önce';
+  const sa = Math.floor(dk / 60); return sa < 24 ? sa + ' sa önce' : Math.floor(sa / 24) + ' gün önce';
+}
+
+async function ekranOrb(main) {
+  main.innerHTML = `<div class="kart"><h2>📈 ORB taraması <small>· ilk 15 dk açılış aralığı</small></h2><div id="orb" class="yukleniyor">Yükleniyor…</div></div>`;
+  let v;
+  try {
+    const r = await fetch(orbAdres() + (orbAdres().includes('?') ? '&' : '?') + 'k=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('Sunucu yanıtı ' + r.status);
+    v = await r.json();
+  } catch (e) {
+    if (aktif.ad !== 'orb') return;
+    $('#orb', main).className = ''; $('#orb', main).innerHTML = hataKutusu('Tarama sonuçlarına ulaşılamadı. İnternet bağlantısını kontrol et. (' + e.message + ')');
+    return;
+  }
+  if (aktif.ad !== 'orb') return;
+  const el = $('#orb', main); el.className = '';
+  const s = v && v.son;
+  if (!s) { el.innerHTML = '<p class="alt">Henüz tarama gelmedi. Bilgisayardaki tarama, ABD seansında (TSİ 17:45–24:00 civarı) 15 dakikada bir sonuç gönderir.</p>'; return; }
+
+  const gecmis = Array.isArray(v.gecmis) ? v.gecmis : [];
+  const bugun = String(s.zaman).slice(0, 10);
+  const onceki = gecmis.filter(g => g.zaman < s.zaman && String(g.zaman).startsWith(bugun)).pop();
+  const oncekiSet = onceki ? new Set([...(onceki.yukari || []), ...(onceki.asagi || [])]) : null;
+  const satir = s.satirlar || [];
+  const yuk = satir.filter(r => r.Yon === 'YUKARI'), asa = satir.filter(r => r.Yon !== 'YUKARI');
+  const eski = (Date.now() - new Date(s.alindi).getTime()) > 40 * 6e4;
+
+  const liste = (rows, baslik) => !rows.length ? `<h3 style="margin:14px 0 4px">${baslik}</h3><p class="alt" style="margin:0">Yok.</p>` :
+    `<h3 style="margin:14px 0 4px">${baslik} <small class="alt">· ${rows.length}</small></h3><ul class="liste">${rows.map(r => `
+      <li class="satir" onclick="location.hash='analiz/${encodeURIComponent(orbKod(r.Hisse))}'">
+        <div class="sol"><div class="kod">${esc(r.Hisse)} ${oncekiSet && !oncekiSet.has(r.Hisse) ? '<span class="cip sari">yeni</span>' : ''}</div>
+          <div class="alt">OR ${usd(r.OR_Alt)} – ${usd(r.OR_Ust)} (%${nf(2).format(r.OR_Genislik_Yuzde)}) · ilk kırılım ${esc(r.Ilk_Kirilim_ET)} ET · hacim ${sayi(r.Hacim_Orani, 2)}×</div></div>
+        <div class="sag"><div class="kod ${renk(r.Fark_Yuzde)}">${r.Fark_Yuzde > 0 ? '+' : r.Fark_Yuzde < 0 ? '−' : ''}%${nf(2).format(Math.abs(r.Fark_Yuzde))}</div><div class="alt">${usd(r.Son)}</div></div></li>`).join('')}</ul>`;
+
+  const bugunku = gecmis.filter(g => String(g.zaman).startsWith(bugun)).reverse();
+  el.innerHTML = `
+    <p style="margin:0"><b>${etTarih(s.zaman)} ET</b> <span class="alt">· ${onceSure(s.alindi)}</span></p>
+    ${eski ? '<div class="uyari" style="margin-top:8px">⚠️ Son tarama 40 dakikadan eski. Seans kapalı olabilir ya da bilgisayar kapalı.</div>' : ''}
+    <p style="margin:8px 0 0"><span class="cip yesil">⬆️ Yukarı ${yuk.length}</span> <span class="cip kirmizi">⬇️ Aşağı ${asa.length}</span>
+      <span class="cip">Veri ${s.veriGelen}/${s.toplam}</span></p>
+    ${liste(yuk, '⬆️ Yukarı kırılım')}
+    ${liste(asa, '⬇️ Aşağı kırılım')}
+    ${s.kesildi ? '<p class="alt">Liste çok uzun olduğu için ilk 60 satır gösteriliyor.</p>' : ''}`;
+
+  main.insertAdjacentHTML('beforeend', `
+    ${bugunku.length > 1 ? `<div class="kart"><h2>🕒 Bugünkü taramalar <small>· ${bugunku.length}</small></h2><ul class="liste">${bugunku.map(g => `
+      <li class="satir" style="cursor:default"><div class="sol"><div class="kod">${esc(String(g.zaman).slice(11))} ET</div>
+        <div class="alt">${esc([...(g.yukari || []).slice(0, 8)].join(' '))}${(g.yukari || []).length > 8 ? ' …' : ''}</div></div>
+        <div class="sag"><span class="cip yesil">⬆️ ${(g.yukari || []).length}</span> <span class="cip kirmizi">⬇️ ${(g.asagi || []).length}</span></div></li>`).join('')}</ul></div>` : ''}
+    <div class="kart"><p class="alt" style="margin:0">Açılış aralığı (OR) = 09:30–09:45 ET'nin en yüksek/en düşük fiyatı. Kırılım: son kapanmış 5 dk mum OR'un üstünde (yukarı) ya da altında (aşağı) kapandı. Fark % = son fiyatın OR sınırına uzaklığı. Hacim oranı = son 3 mumun ortalama hacmi / OR mumlarının ortalaması. "Yeni" = bir önceki taramada yoktu. S&P 500'ün en büyük ~100 hissesi; veri Yahoo Finance, 15 dakikada bir bilgisayardan gönderilir. Kendi yöntemimiz; <b>yatırım tavsiyesi değildir</b>.</p></div>`);
+}
+
 // ---------------------------------------------------------------- AYARLAR
 function ekranAyarlar(main) {
   const a = ayarlar(), k = anahtar();
@@ -586,6 +649,12 @@ function ekranAyarlar(main) {
     <p class="alt" style="margin-top:0">Anahtar olmadan arayüzü denemek için uydurma veriler gösterir. Gerçek değildir.</p>
     <label style="display:flex;align-items:center;gap:10px;margin:0"><input type="checkbox" id="demo" style="width:22px;min-height:22px;margin:0" ${a.demo ? 'checked' : ''}> Örnek veriyi kullan</label>
   </div>
+
+  <form class="kart" id="f-orb"><h2>ORB taraması adresi</h2>
+    <p class="alt" style="margin-top:0">Bilgisayardaki taramanın sonuç gönderdiği adres. Hazır gelir; değiştirmen gerekmez. Boş bırakıp kaydedersen varsayılana döner.</p>
+    <label>Adres<input id="orb-adres" type="url" autocomplete="off" spellcheck="false" value="${esc(depo.al('orbAdres', ''))}" placeholder="varsayılan"></label>
+    <div class="dugmeler"><button class="dugme" type="submit">Kaydet</button></div>
+  </form>
 
   <form class="kart" id="f-agirlik"><h2>Puan ağırlıkları <small>· kendi yöntemimiz</small></h2>
     <div class="iki">${BOYUTLAR.map(b => `<label>${b}<input type="number" name="${b}" value="${a.agirlik[b]}" min="0" max="100" step="1" inputmode="numeric"></label>`).join('')}</div>
@@ -624,7 +693,12 @@ function ekranAyarlar(main) {
     depo.koy('anahtar', v); if (v) ayarKaydet({ demo: false }); bildir(v ? 'Anahtar kaydedildi.' : 'Anahtar silindi.'); yonlendir();
   };
   $('#goster', main).onclick = e => { const i = $('#anahtar', main); i.type = i.type === 'password' ? 'text' : 'password'; e.target.textContent = i.type === 'password' ? 'Göster' : 'Gizle'; };
-  $('#demo', main).onchange = e => { ayarKaydet({ demo: e.target.checked }); bildir(e.target.checked ? 'Örnek veri açık.' : 'Örnek veri kapalı.'); yonlendir(); };
+  $('#f-orb', main).onsubmit = e => {
+    e.preventDefault(); const v = $('#orb-adres', main).value.trim();
+    if (v && !/^https:\/\/script\.google(usercontent)?\.com\//.test(v)) { bildir('Adres https://script.google.com/... ile başlamalı.'); return; }
+    if (v) depo.koy('orbAdres', v); else depo.sil('orbAdres'); bildir(v ? 'ORB adresi kaydedildi.' : 'Varsayılan ORB adresi kullanılacak.');
+  };
+  $('#demo', main).onchange =e => { ayarKaydet({ demo: e.target.checked }); bildir(e.target.checked ? 'Örnek veri açık.' : 'Örnek veri kapalı.'); yonlendir(); };
   $('#f-agirlik', main).onsubmit = e => {
     e.preventDefault(); const f = e.target, ag = {};
     for (const b of BOYUTLAR) { const v = Number(f[b].value); if (!(v >= 0)) { bildir(b + ' ağırlığı geçersiz.'); return; } ag[b] = v; }
