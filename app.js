@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 5, tarih: '23.11.2026' };
+const UYGULAMA_SURUM = { no: 6, tarih: '24.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -98,7 +98,7 @@ function fh(yol, param, sure, yenile = false) {
 
 const api = {
   fiyat: (t, y) => fh('/quote', { symbol: t }, SURE.quote, y),
-  metrik: (t, y) => fh('/stock/metric', { symbol: t, metric: 'all' }, SURE.metric, y).then(r => (r && r.metric) || {}),
+  metrik: (t, y) => fh('/stock/metric', { symbol: t, metric: 'all' }, SURE.metric, y).then(r => (r && r.metric) ? { ...r.metric, _seri: r.series || {} } : {}),
   profil: (t, y) => fh('/stock/profile2', { symbol: t }, SURE.profile, y),
   kazanc: (t, y) => fh('/stock/earnings', { symbol: t }, SURE.earnings, y),
   takvim: (t, y) => fh('/calendar/earnings', { symbol: t, from: bugunStr(), to: gunEkle(bugunStr(), 90) }, SURE.calendar, y)
@@ -131,9 +131,12 @@ const METRIKLER = [
   ['Kalite', 'ROA (%)', m => ilk(m, ['roaTTM', 'roaRfy']), 2, 15, 'Hayır'],
   ['Kalite', 'Brüt marj (%)', m => ilk(m, ['grossMarginTTM', 'grossMarginAnnual']), 20, 65, 'Hayır'],
   ['Kalite', 'Net marj (%)', m => ilk(m, ['netProfitMarginTTM', 'netProfitMarginAnnual']), 0, 25, 'Hayır'],
+  ['Kalite', 'ROIC (%)', (m, x) => x.t && sayiMi(x.t.roic) ? x.t.roic * 100 : null, 9, 25, 'Hayır'],
+  ['Kalite', 'Nakit dönüşümü (FCF / net kâr)', (m, x) => x.t ? x.t.nakitDon : null, 0.5, 0.9, 'Hayır'],
   ['Kalite', 'Borç / özkaynak', m => ilk(m, ['totalDebt/totalEquityQuarterly', 'totalDebt/totalEquityAnnual']), 2, 0, 'Hayır'],
   ['Kalite', 'Cari oran', m => ilk(m, ['currentRatioQuarterly', 'currentRatioAnnual']), 0.8, 2.5, 'Hayır'],
-  ['Değer', 'F/K', m => ilk(m, ['peTTM', 'peExclExtraTTM', 'peBasicExclExtraTTM', 'peInclExtraTTM']), 45, 12, 'Evet'],
+  // Net kâr faaliyet kârını belirgin aşıyorsa (faaliyet dışı kazanç) F/K, faaliyet kârına dayalı düzeltilmiş F/K ile puanlanır.
+  ['Değer', 'F/K', (m, x) => x.t && x.t.fkDuzeltildi ? x.t.duzFk : ilk(m, ['peTTM', 'peExclExtraTTM', 'peBasicExclExtraTTM', 'peInclExtraTTM']), 45, 12, 'Evet'],
   ['Değer', 'Fiyat / satış', m => ilk(m, ['psTTM', 'psAnnual']), 12, 1.5, 'Evet'],
   ['Değer', 'PD/DD', m => ilk(m, ['pbQuarterly', 'pbAnnual']), 12, 1.5, 'Evet'],
   ['Değer', 'Fiyat / FCF', m => ilk(m, ['pfcfShareTTM', 'pfcfShareAnnual']), 50, 12, 'Evet'],
@@ -144,7 +147,8 @@ const METRIKLER = [
   ['Büyüme', 'EPS büyümesi yıllık (%)', m => ilk(m, ['epsGrowthTTMYoy', 'epsGrowthQuarterlyYoy']), 0, 30, 'Hayır'],
   ['Risk', 'Beta', m => ilk(m, ['beta']), 2, 0.8, 'Hayır'],
   ['Risk', '52H zirveye yakınlık', (m, x) => sayiMi(x.fiyat) && sayiMi(m['52WeekHigh']) && m['52WeekHigh'] > 0 ? x.fiyat / m['52WeekHigh'] : null, 0.6, 1, 'Hayır'],
-  ['Risk', 'Faiz karşılama oranı', m => ilk(m, ['netInterestCoverageTTM', 'netInterestCoverageAnnual']), 1, 15, 'Hayır'],
+  ['Risk', 'Net borç / FAVÖK', (m, x) => x.t ? x.t.ndFavok : null, 4, 1, 'Hayır'],
+  ['Risk', 'Faiz karşılama oranı', m => ilk(m, ['netInterestCoverageTTM', 'netInterestCoverageAnnual']), 2, 5, 'Hayır'],
   ['Risk', 'Pozitif kâr sürprizi oranı', (m, x) => { const s = (x.kazanc || []).slice(0, 4).map(r => r.surprisePercent).filter(sayiMi); return s.length ? s.filter(v => v > 0).length / s.length : null; }, 0.25, 1, 'Hayır']
 ];
 const BOYUTLAR = ['Kalite', 'Değer', 'Büyüme', 'Risk'];
@@ -229,6 +233,181 @@ function tutarlilik(baz, dcf) {
   if (kat <= 1.5) return { seviye: 'Yüksek', sinif: 'yesil', oran, aciklama: 'İki yöntem birbirine yakın: ' + yon + '.' };
   if (kat <= 2.5) return { seviye: 'Orta', sinif: 'sari', oran, aciklama: 'Yöntemler kısmen ayrışıyor: ' + yon + '.' };
   return { seviye: 'Düşük', sinif: 'kirmizi', oran, aciklama: 'Yöntemler çok ayrışıyor: ' + yon + '. Hedefleri temkinli okuyun.' };
+}
+
+// ---------------------------------------------------------------- eleme akışı ve kırmızı bayraklar (kendi uyarlamamız)
+// Kaynak: temel analiz rehberindeki 8 adımlı eleme akışı ve 14 kırmızı bayrak. Eşikler başlangıç noktasıdır, kural değil.
+const SERMAYE_MALIYETI = 0.09;
+const FINANS_SEKTORU = /bank|insurance|sigorta/i;
+
+/** Finnhub yıllık serisi, yeniden eskiye. Oranlar kesir olarak döner (yüzde gelirse çevrilir). */
+function seri(m, ad, oran = true, esik = 1.5) {
+  const s = (((m && m._seri) || {}).annual || {})[ad];
+  if (!Array.isArray(s)) return [];
+  const v = s.filter(x => x && sayiMi(x.v)).sort((a, b) => String(b.period).localeCompare(String(a.period))).map(x => x.v);
+  return oran && v.some(x => Math.abs(x) > esik) ? v.map(x => x / 100) : v;
+}
+
+/** Ham Finnhub verisinden rehberin istediği büyüklükleri türetir (milyar $). */
+function turet(m, fiyat, ev, pd, fcf, sektor) {
+  const t = { finans: FINANS_SEKTORU.test(sektor || '') };
+  const ps = ilk(m, ['psTTM', 'psAnnual']);
+  t.gelir = pd > 0 && ps > 0 ? pd / ps : null;
+  const opm = ilk(m, ['operatingMarginTTM', 'operatingMarginAnnual']);
+  const npm = ilk(m, ['netProfitMarginTTM', 'netProfitMarginAnnual']);
+  const pe = ilk(m, ['peTTM', 'peExclExtraTTM', 'peBasicExclExtraTTM', 'peInclExtraTTM']);
+  t.faaliyet = t.gelir !== null && sayiMi(opm) ? t.gelir * opm / 100 : null;
+  t.netKar = t.gelir !== null && sayiMi(npm) ? t.gelir * npm / 100 : pd > 0 && pe > 0 ? pd / pe : null;
+  // Düzeltilmiş F/K: piyasa değeri / (faaliyet kârı × (1 − %21 vergi)). Faaliyet dışı kazançları (ör. özel şirket payı değerlemesi) ayıklar.
+  t.duzFk = t.faaliyet > 0 && pd > 0 ? pd / (t.faaliyet * 0.79) : null;
+  t.nkOrani = t.faaliyet > 0 && sayiMi(t.netKar) ? t.netKar / t.faaliyet : null;
+  t.fkDuzeltildi = sayiMi(t.nkOrani) && t.nkOrani > 1.2 && sayiMi(t.duzFk);
+  t.nakitDon = sayiMi(fcf) && t.netKar > 0 ? fcf / t.netKar : null;
+  const evE = ilk(m, ['evEbitdaTTM']);
+  t.favok = ev !== null && sayiMi(evE) && evE > 0 ? ev / evE : null;
+  t.netBorc = ev !== null && pd !== null ? ev - pd : null;
+  t.ndFavok = t.favok > 0 && sayiMi(t.netBorc) ? t.netBorc / t.favok : null;
+  t.kapsama = ilk(m, ['netInterestCoverageTTM', 'netInterestCoverageAnnual']);
+  // Kriz senaryosu: FAVÖK yarıya iner, amortisman aynı kalır → faaliyet kârı = faaliyet − FAVÖK/2; faiz gideri aynı.
+  const faiz = sayiMi(t.kapsama) && t.kapsama > 0 && t.faaliyet > 0 ? t.faaliyet / t.kapsama : null;
+  t.krizKapsama = faiz && t.favok > 0 ? (t.faaliyet - t.favok / 2) / faiz : null;
+  t.krizNd = t.favok > 0 && sayiMi(t.netBorc) ? t.netBorc / (t.favok / 2) : null;
+  // Hisse sayısının 5 yıllık yıllık değişimi ≈ (1 + gelir büyümesi) / (1 + hisse başı gelir büyümesi) − 1.
+  const rg = m.revenueGrowth5Y, rs = m.revenueShareGrowth5Y;
+  t.sulanma = sayiMi(rg) && sayiMi(rs) && rs > -100 ? (1 + rg / 100) / (1 + rs / 100) - 1 : null;
+  const dy = ilk(m, ['currentDividendYieldTTM', 'dividendYieldIndicatedAnnual']);
+  t.temettuFcf = sayiMi(dy) && dy > 0 && pd > 0 ? (sayiMi(fcf) && fcf > 0 ? dy / 100 * pd / fcf : Infinity) : null;
+  const roicS = seri(m, 'roic', true, 3);
+  t.roicSeri = roicS.length ? roicS : seri(m, 'roicTTM', true, 3);
+  t.roic = t.roicSeri.length ? t.roicSeri[0] : sayiMi(m.roiTTM) ? m.roiTTM / 100 : null;
+  t.omSeri = seri(m, 'operatingMargin');
+  return t;
+}
+
+const DURUM = { gecti: ['✅', 'yesil', 'Geçti'], dikkat: ['⚠️', 'sari', 'Dikkat'], elendi: ['⛔', 'kirmizi', 'Elendi'], yok: ['—', '', 'Veri yok'], elle: ['✍️', '', 'Elle'] };
+
+/** 8 adımlı eleme akışı. Her adım: { ad, durum, deger, not }. */
+function elemeAkisi(m, t, sen, rd) {
+  const a = [];
+  const ek = (ad, durum, deger, not) => a.push({ ad, durum, deger, not });
+  const finansNotu = 'Banka ve sigortada FCF, ROIC ve FAVÖK anlamlı değil; sektör ölçütlerine (NIM, takipteki kredi, birleşik rasyo) bakın.';
+
+  // 1) Gelir ve büyüme
+  const g5 = sayiMi(m.revenueGrowth5Y) ? m.revenueGrowth5Y / 100 : null, g3 = sayiMi(m.revenueGrowth3Y) ? m.revenueGrowth3Y / 100 : null;
+  const g = g5 ?? g3;
+  if (g === null) ek('Gelir büyümesi', 'yok', '—', '');
+  else ek('Gelir büyümesi', g < 0 ? 'elendi' : 'gecti', (g5 !== null ? '5Y' : '3Y') + ' yıllık ' + yuzde(g),
+    g < 0 ? 'Gelir yıllardır küçülüyor. Bilinçli portföy temizliği değilse elenir.' : 'Organik büyüme ile satın alma/kur etkisini 10-K\'dan ayırın.');
+
+  // 2) Marj trendi
+  const om = t.omSeri;
+  if (om.length >= 2) {
+    let dusus = 0; for (let i = 0; i + 1 < om.length && om[i] < om[i + 1]; i++) dusus++;
+    const k = Math.min(3, om.length - 1), fark = om[0] - om[k];
+    const durum = dusus >= 3 && (g3 ?? g ?? 0) > 0 ? 'elendi' : fark < -0.02 ? 'dikkat' : 'gecti';
+    ek('Faaliyet marjı trendi', durum, yuzde(om[0], 1, false) + ' (' + k + ' yıl önce ' + yuzde(om[k], 1, false) + ')',
+      durum === 'elendi' ? 'Gelir artarken marj ' + dusus + ' yıldır düşüyor: büyüme "satın alınmış" olabilir. Yönetimin açıklaması yoksa elenir.'
+        : durum === 'dikkat' ? 'Marj ' + k + ' yılda ' + nf(1).format(-fark * 100) + ' puan geriledi.' : 'Marj korunuyor ya da artıyor.');
+  } else {
+    const ttm = m.operatingMarginTTM, o5 = m.operatingMargin5Y;
+    if (sayiMi(ttm) && sayiMi(o5)) ek('Faaliyet marjı trendi', ttm < o5 - 2 ? 'dikkat' : 'gecti', '%' + nf(1).format(ttm) + ' (5Y ort. %' + nf(1).format(o5) + ')', 'Yıllık seri yok; son 12 ay 5 yıllık ortalamayla karşılaştırıldı.');
+    else ek('Faaliyet marjı trendi', 'yok', '—', '');
+  }
+
+  // 3) Serbest nakit akışı
+  if (t.finans) ek('Nakit dönüşümü (FCF / net kâr)', 'yok', '—', finansNotu);
+  else {
+    const fm = seri(m, 'fcfMargin'), nm = seri(m, 'netMargin');
+    const yillik = fm.slice(0, 3).map((f, i) => nm[i] > 0 ? f / nm[i] : null).filter(sayiMi);
+    const ucYilDusuk = yillik.length === 3 && yillik.every(v => v < 0.5);
+    const hizliBuyume = (g3 ?? 0) > 0.25;
+    if (!(t.netKar > 0)) ek('Nakit dönüşümü (FCF / net kâr)', 'dikkat', 'net kâr negatif', 'Kâr yokken dönüşüm hesaplanmaz; erken aşama bir büyüme şirketi mi, bakın.');
+    else if (!sayiMi(t.nakitDon)) ek('Nakit dönüşümü (FCF / net kâr)', 'yok', '—', '');
+    else {
+      const durum = ucYilDusuk && t.nakitDon < 0.5 && !hizliBuyume ? 'elendi' : t.nakitDon < 0.6 || ucYilDusuk ? 'dikkat' : 'gecti';
+      ek('Nakit dönüşümü (FCF / net kâr)', durum, yuzde(t.nakitDon, 0, false) + (yillik.length ? ' · yıllık ' + yillik.map(v => yuzde(v, 0, false)).join(', ') : ''),
+        durum === 'elendi' ? '3 yıldır %50\'nin altında: kâr nakde dönmüyor.' : durum === 'dikkat' ? 'Sağlıklı aralık ~%80–110. Düşüklüğün nedeni genelde işletme sermayesi (alacak, stok).'
+          : t.nakitDon > 1.5 ? 'Nakit kârın çok üstünde: kâr geçici olarak düşük olabilir ya da borçlar ertelenmiş olabilir; bir çeyrekte borç artışıyla şişen FCF kalıcı değildir.' : 'Kâr nakde dönüyor (sağlıklı aralık ~%80–110).');
+    }
+  }
+
+  // 4) ROIC
+  if (t.finans) ek('ROIC', 'yok', '—', finansNotu);
+  else if (!sayiMi(t.roic)) ek('ROIC', 'yok', '—', '');
+  else {
+    const s = t.roicSeri.slice(0, 3), yillarca = s.length === 3 && s.every(v => v < SERMAYE_MALIYETI);
+    const durum = yillarca ? 'elendi' : t.roic < SERMAYE_MALIYETI ? 'dikkat' : 'gecti';
+    ek('ROIC', durum, yuzde(t.roic, 1, false) + (s.length > 1 ? ' · önceki ' + s.slice(1).map(v => yuzde(v, 0, false)).join(', ') : '') + (t.roicSeri.length ? '' : ' (ROI)'),
+      durum === 'elendi' ? 'Yıllardır sermaye maliyetinin (%9) altında: büyüdükçe değer yok ediyor.' : durum === 'dikkat' ? 'Sermaye maliyetinin (%9 varsayım) altında.' : 'Sermaye maliyetinin (%9 varsayım) üstünde.');
+  }
+
+  // 5) Borç ve faiz yükü
+  if (t.finans) ek('Net borç ve faiz yükü', 'yok', '—', finansNotu);
+  else if (!sayiMi(t.ndFavok) && !sayiMi(t.kapsama)) ek('Net borç ve faiz yükü', 'yok', '—', '');
+  else {
+    const netNakit = sayiMi(t.netBorc) && t.netBorc <= 0;
+    const durum = !netNakit && sayiMi(t.krizKapsama) && t.krizKapsama < 2 ? 'elendi'
+      : !netNakit && ((sayiMi(t.ndFavok) && t.ndFavok > 3) || (sayiMi(t.kapsama) && t.kapsama > 0 && t.kapsama < 5)) ? 'dikkat' : 'gecti';
+    const parca = [netNakit ? 'net nakit' : 'net borç/FAVÖK ' + sayi(t.ndFavok) + 'x'];
+    if (sayiMi(t.kapsama) && t.kapsama > 0) parca.push('faiz karşılama ' + sayi(t.kapsama) + 'x');
+    if (!netNakit && (sayiMi(t.krizNd) || sayiMi(t.krizKapsama))) parca.push('kriz: ' + [sayiMi(t.krizNd) ? sayi(t.krizNd) + 'x borç' : '', sayiMi(t.krizKapsama) ? (t.krizKapsama < 0 ? 'faaliyet zararı' : sayi(t.krizKapsama) + 'x karşılama') : ''].filter(Boolean).join(', '));
+    ek('Net borç ve faiz yükü', durum, parca.join(' · '),
+      durum === 'elendi' ? 'FAVÖK yarıya inerse faiz karşılama 2x\'in altına düşüyor.' : durum === 'dikkat' ? 'Net borç/FAVÖK 3x\'e kadar rahat, 3–4x izlenmeli, 4x üstü kırılgan; faiz karşılama 5x\'in altı zayıf. Döngüsel şirkette zirve FAVÖK\'e güvenmeyin.' : 'Bilanço rahat (kriz senaryosu: FAVÖK −%50).');
+  }
+
+  // 6) Seyrelme
+  if (!sayiMi(t.sulanma)) ek('Hisse sayısı (seyrelme)', 'yok', '—', 'Hisse bazlı ödemeyi (SBC) 10-K\'dan kontrol edin.');
+  else ek('Hisse sayısı (seyrelme)', t.sulanma > 0.03 ? 'elendi' : t.sulanma > 0.01 ? 'dikkat' : 'gecti', 'yılda ' + yuzde(t.sulanma) + ' (5Y, tahmini)',
+    (t.sulanma > 0.03 ? 'Hisse sayısı yılda %3\'ten hızlı artıyor: ortakların payı eriyor. ' : t.sulanma > 0 ? 'Geri alım yalnızca seyrelmeyi karşılıyorsa değer katmaz. ' : 'Hisse sayısı azalıyor. ') + 'SBC / FCF\'yi 10-K\'dan kontrol edin.');
+
+  // 7) Sermaye dağıtımı (yargı gerektirir)
+  ek('Sermaye dağıtımı', 'elle', sayiMi(t.temettuFcf) ? 'temettü / FCF ' + (Number.isFinite(t.temettuFcf) ? yuzde(t.temettuFcf, 0, false) : 'FCF negatif') : '—',
+    'Satın almalar değer yarattı mı, geri alımlar hangi fiyattan yapıldı, yönetim sözlerini tuttu mu? Hedefleri sürekli kaçırıp dış etkenleri suçluyorsa elenir.');
+
+  // 8) Fiyat (en son)
+  const iyimser = sen.satirlar[2].b, pes = seri(m, 'pe', false).filter(v => v > 0).slice(0, 5);
+  const fkOrt = pes.length >= 3 ? pes.reduce((x, y) => x + y, 0) / pes.length : null;
+  const fkSimdi = t.fkDuzeltildi ? t.duzFk : sen.fkTtm;
+  const tarihsel = sayiMi(fkOrt) && sayiMi(fkSimdi) && fkSimdi > 0 ? fkSimdi / fkOrt : null;
+  if (!sayiMi(rd.g)) ek('Fiyat', tarihsel !== null && tarihsel > 1.3 ? 'dikkat' : 'yok', tarihsel !== null ? 'F/K ' + sayi(fkSimdi) + ' · ' + pes.length + ' yıl ort. ' + sayi(fkOrt) : '—', 'Reverse DCF hesaplanamadı (' + (rd.hata || 'veri yok') + ').');
+  else {
+    const durum = rd.g > iyimser ? 'elendi' : rd.g > sen.g || (tarihsel !== null && tarihsel > 1.3) ? 'dikkat' : 'gecti';
+    ek('Fiyat', durum, 'fiyatlanan büyüme ' + yuzde(rd.g) + ' · iyimser senaryo ' + yuzde(iyimser) + (tarihsel !== null ? ' · F/K kendi ' + pes.length + ' yıl ort.\'nın ' + nf(1).format(tarihsel) + ' katı' : ''),
+      durum === 'elendi' ? 'Fiyat, iyimser senaryomuzdaki büyümeden bile fazlasını istiyor.' : durum === 'dikkat' ? (rd.g > sen.g ? 'Fiyat baz senaryodan hızlı büyüme varsayıyor. ' : '') + (tarihsel !== null && tarihsel > 1.3 ? 'F/K kendi geçmişinin belirgin üstünde.' : '') : 'Fiyatın istediği büyüme baz senaryonun içinde.');
+  }
+  return a;
+}
+
+const BAYRAKLAR = [
+  'Net kâr artıyor, serbest nakit akışı artmıyor',
+  'Alacaklar gelirden çok daha hızlı büyüyor',
+  'Stoklar gelirden hızlı büyüyor',
+  'Şirket hep "düzeltilmiş" rakamlarla konuşuyor, resmi rakamla fark her yıl açılıyor',
+  'Hisse bazlı ödeme (SBC) net kârdan büyük ya da FCF\'nin büyük kısmı',
+  'Geri alım açıklanıyor ama hisse sayısı düşmüyor',
+  'Gelir artarken marj düşüyor',
+  'ROIC yıllardır sermaye maliyetinin altında',
+  'Borcun büyük kısmı 12–24 ay içinde vadeli',
+  'Döngüsel şirket, borçluluk zirve FAVÖK ile hesaplanmış',
+  'Sık denetçi, CFO ya da muhasebe politikası değişikliği',
+  'Hedefler tekrar tekrar kaçırılıyor, hep dış etkenler suçlanıyor',
+  'Seri satın almalar sürerken ROIC düşüyor',
+  'Temettü FCF\'nin %80\'inden fazla'
+];
+/** Otomatik hesaplanabilen bayraklar: true = var, false = yok, null = veri yok. Diğerleri elle işaretlenir. */
+function otomatikBayraklar(m, t, akis) {
+  const devir = ad => { const s = seri(m, ad, false); return s.length >= 3 && s[2] > 0 ? s[0] / s[2] < 0.8 : null; };
+  const om = t.omSeri, k = Math.min(3, om.length - 1), g3 = m.revenueGrowth3Y;
+  const roic = akis.find(x => x.ad === 'ROIC');
+  return {
+    0: sayiMi(t.nakitDon) ? t.nakitDon < 0.6 : null,
+    1: devir('receivablesTurnover'),
+    2: devir('inventoryTurnover'),
+    5: sayiMi(t.sulanma) ? t.sulanma > 0.005 : null,
+    6: om.length >= 2 && sayiMi(g3) ? g3 > 0 && om[0] < om[k] - 0.01 : null,
+    7: t.finans || !roic || roic.durum === 'yok' ? null : roic.durum === 'elendi',
+    13: sayiMi(t.temettuFcf) ? t.temettuFcf > 0.8 : false
+  };
 }
 
 /** Reverse DCF: bugünkü değeri haklı çıkarmak için FCF'nin yıllık kaç büyümesi gerekir (ikiye bölme). */
@@ -386,7 +565,6 @@ async function ekranAnaliz(main, param, yenile) {
 function analizCiz(el, t, m, q, pr, kz) {
   const a = ayarlar();
   const fiyat = sayiMi(q.c) && q.c > 0 ? q.c : null;
-  const p = puanla(m, { fiyat, kazanc: kz }, a.agirlik);
   const sen = senaryolar(m, fiyat, a);
   const lo = m['52WeekLow'], hi = m['52WeekHigh'];
   const konum = sayiMi(fiyat) && sayiMi(lo) && sayiMi(hi) && hi > lo ? (fiyat - lo) / (hi - lo) : null;
@@ -395,10 +573,19 @@ function analizCiz(el, t, m, q, pr, kz) {
   const evFcf = ilk(m, ['currentEv/freeCashFlowTTM', 'currentEv/freeCashFlowAnnual']);
   const pFcf = ilk(m, ['pfcfShareTTM', 'pfcfShareAnnual']);
   const fcf = ev !== null && sayiMi(evFcf) && evFcf !== 0 ? ev / evFcf : pd !== null && sayiMi(pFcf) && pFcf !== 0 ? pd / pFcf : null;
+  const tr = turet(m, fiyat, ev, pd, fcf, pr.finnhubIndustry);
+  const p = puanla(m, { fiyat, kazanc: kz, t: tr }, a.agirlik);
   const rd = reverseDcf(ev ?? pd, fcf, a.iskonto / 100, a.kalici / 100, a.yil);
   const dcf = basitDcf(m, fiyat, ev, pd, fcf, a);
   const baz = sen.satirlar[1].hedef;
-  const tut = tutarlilik(baz, dcf);
+  const tut = tr.finans ? { seviye: 'Belirsiz', sinif: '', aciklama: 'Banka/sigorta: nakit akışına dayalı değer bu sektörde anlamlı değil; F/K ve PD/DD ile okuyun.' } : tutarlilik(baz, dcf);
+  const akis = elemeAkisi(m, tr, sen, rd);
+  const elenen = akis.findIndex(x => x.durum === 'elendi');
+  const dikkatSay = akis.filter(x => x.durum === 'dikkat').length;
+  const oto = otomatikBayraklar(m, tr, akis);
+  const elleKayit = (depo.al('bayrak', {})[t]) || [];
+  const bayrakVar = i => oto[i] === true || (oto[i] === undefined && elleKayit.includes(i));
+  const bayrakSay = BAYRAKLAR.filter((_, i) => bayrakVar(i)).length;
   const sorunlar = veriKontrol(sen.fkTtm, pd, fcf, dcf, fiyat);
   const veriUyari = sorunlar.length ? `<div class="uyari kirmizi-kutu" role="alert"><b>⚠️ Veri tutarsız görünüyor</b> — ${esc(sorunlar.join(' · '))}.
     Finnhub verisinde hata olabilir (ör. yeni ayrılan şirketlerde ölçek sorunu). Hedefleri ve değerlemeleri kullanmayın.</div>` : '';
@@ -437,6 +624,24 @@ function analizCiz(el, t, m, q, pr, kz) {
   </div>
 
   <div class="kart">
+    <h2>🧭 Eleme akışı <small>· 8 adım, rehbere göre</small></h2>
+    ${tr.finans ? '<div class="uyari">🏦 Banka/sigorta: FCF, ROIC ve FAVÖK bu sektörde anlamlı değil. NIM, takipteki krediler, sermaye yeterliliği (CET1) ya da birleşik rasyo gibi sektör ölçütlerine bakın.</div>' : ''}
+    <p style="margin:0 0 10px">${elenen >= 0 ? `<span class="cip kirmizi">⛔ ${elenen + 1}. adımda elendi: ${esc(akis[elenen].ad)}</span>` : `<span class="cip ${dikkatSay ? 'sari' : 'yesil'}">${dikkatSay ? '⚠️ Elenmedi, ' + dikkatSay + ' adımda dikkat' : '✅ Otomatik adımların hepsini geçti'}</span>`}
+      <span class="alt" style="display:block;margin-top:4px">Amaç beğenmek değil elemek: şirketlerin çoğu ilk 3 adımda düşer. Eşikler başlangıç noktasıdır, kural değil.</span></p>
+    <ol class="akis">${akis.map(x => { const d = DURUM[x.durum]; return `<li><div class="akis-ust"><b>${esc(x.ad)}</b><span class="cip ${d[1]}">${d[0]} ${d[2]}</span></div>
+      <div class="sayi">${esc(x.deger)}</div>${x.not ? `<div class="alt">${esc(x.not)}</div>` : ''}</li>`; }).join('')}</ol>
+  </div>
+
+  <div class="kart" id="bayraklar">
+    <h2>🚩 Kırmızı bayraklar <small>· ${bayrakSay} / ${BAYRAKLAR.length}</small></h2>
+    <p style="margin:0 0 10px"><span class="cip ${bayrakSay > 2 ? 'kirmizi' : bayrakSay ? 'sari' : 'yesil'}">${bayrakSay > 2 ? '⛔ İkiden fazla bayrak: açıklanana kadar durun' : bayrakSay ? '⚠️ Tek bayrak satış sinyali değil, nedenini araştırın' : '✅ İşaretli bayrak yok'}</span></p>
+    <ul class="bayrak-liste">${BAYRAKLAR.map((b, i) => { const o = oto[i]; const otoMu = o !== undefined;
+      return `<li><label><input type="checkbox" data-bayrak="${i}" ${bayrakVar(i) ? 'checked' : ''} ${otoMu ? 'disabled' : ''}> <span>${esc(b)}</span></label>
+        <small class="alt">${otoMu ? (o === null ? 'otomatik · veri yok' : 'otomatik') : 'elle işaretleyin'}</small></li>`; }).join('')}</ul>
+    <p class="alt" style="margin:8px 0 0">Otomatik olanlar Finnhub verisinden hesaplanır; diğerleri 10-K ve bilanço görüşmesinden sizin yargınızdır ve bu cihazda hisse bazında saklanır.</p>
+  </div>
+
+  <div class="kart">
     <h2>🎯 Senaryolu hedef fiyat <small>· 1 yıllık</small></h2>
     ${sayiMi(sen.eps) && sen.eps <= 0 ? '<div class="uyari">⚠️ EPS negatif: F/K yöntemi bu hisse için anlamlı değil; reverse DCF\'ye bakın.</div>' : ''}
     ${sorunlar.length ? '<p style="margin:0 0 8px"><span class="cip kirmizi">⚠️ Veri tutarsız — hedefler güvenilir değil</span></p>' : ''}
@@ -445,8 +650,9 @@ function analizCiz(el, t, m, q, pr, kz) {
     <div class="uc" style="margin-bottom:10px">
       <div><div class="etiket">EPS (12 ay)</div><div class="sayi">${usd(sen.eps)}</div></div>
       <div><div class="etiket">Baz büyüme</div><div class="sayi">${yuzde(sen.g)}</div><div class="alt">${esc(sen.gKaynak)}${sayiMi(sen.gHam) && sen.gHam !== sen.g ? ' · ham ' + yuzde(sen.gHam) + ', sınırlandı' : ''}</div></div>
-      <div><div class="etiket">F/K</div><div class="sayi">${sayi(sen.fk)}</div><div class="alt">${a.fkKaynak === 'ileri' && sen.fk === sen.fkIleri ? 'ileri' : 'son 12 ay'}</div></div>
+      <div><div class="etiket">F/K</div><div class="sayi">${sayi(sen.fk)}</div><div class="alt">${a.fkKaynak === 'ileri' && sen.fk === sen.fkIleri ? 'ileri' : 'son 12 ay'}${sayiMi(tr.duzFk) ? ' · düzeltilmiş ' + sayi(tr.duzFk) : ''}</div></div>
     </div>
+    ${tr.fkDuzeltildi ? `<div class="uyari">⚠️ Net kâr faaliyet kârının ${nf(2).format(tr.nkOrani)} katı: kârın önemli kısmı faaliyet dışı (ör. iştirak/özel şirket payı değerlemesi). Faaliyet kârına dayalı düzeltilmiş F/K ${sayi(tr.duzFk)}; skorda bu kullanıldı. EPS büyümesi de şişik olabilir.</div>` : ''}
     <div class="iki">
       <label>Büyüme üst sınırı (%)<input type="number" id="ust-sinir" value="${a.ustSinir}" min="0" max="100" step="1" inputmode="numeric"></label>
       <label>F/K kaynağı<select id="fk-kaynak"><option value="ttm"${a.fkKaynak !== 'ileri' ? ' selected' : ''}>Son 12 ay (${sayi(sen.fkTtm)})</option><option value="ileri"${a.fkKaynak === 'ileri' ? ' selected' : ''}>İleri (${sayi(sen.fkIleri)})</option></select></label>
@@ -470,6 +676,7 @@ function analizCiz(el, t, m, q, pr, kz) {
       <label>Kalıcı büy. (%)<input type="number" id="kalici" value="${a.kalici}" step="0.5" inputmode="decimal"></label>
       <label>Yıl<input type="number" id="yil" value="${a.yil}" step="1" min="1" max="30" inputmode="numeric"></label>
     </div>
+    ${tr.finans ? '<div class="uyari">🏦 Banka/sigortada serbest nakit akışı anlamlı değil; bu kartı dikkate almayın.</div>' : ''}
     <div class="bilgi"><b>Fiyatlanan yıllık FCF büyümesi: ${sayiMi(rd.g) ? yuzde(rd.g) : esc(rd.hata)}</b>${rdYorum ? '<br>' + rdYorum : ''}</div>
     <div class="iki" style="margin:0">
       <div><div class="etiket">Nakit akışına dayalı değer</div><div class="sayi"><b>${dcf ? usd(dcf.hisseBasi) : '—'}</b></div>
@@ -485,6 +692,12 @@ function analizCiz(el, t, m, q, pr, kz) {
   <div class="kart" id="analiz-insider"><h2>🧑‍💼 Insider</h2><p class="alt">Yükleniyor…</p></div>`;
 
   const kaydetCiz = degisen => { ayarKaydet(degisen); analizCiz(el, t, m, q, pr, kz); yonlendirmeYok(el, t); };
+  el.querySelectorAll('[data-bayrak]').forEach(c => { c.onchange = () => {
+    const tum = depo.al('bayrak', {}), i = Number(c.dataset.bayrak), set = new Set(tum[t] || []);
+    if (c.checked) set.add(i); else set.delete(i);
+    tum[t] = [...set]; if (!tum[t].length) delete tum[t]; depo.koy('bayrak', tum);
+    const y = window.scrollY; analizCiz(el, t, m, q, pr, kz); yonlendirmeYok(el, t); window.scrollTo(0, y);
+  }; });
   $('#ust-sinir', el).onchange = e => { const v = Number(e.target.value); if (v >= 0 && v <= 100) kaydetCiz({ ustSinir: v }); };
   $('#fk-kaynak', el).onchange = e => kaydetCiz({ fkKaynak: e.target.value });
   ['iskonto', 'kalici', 'yil'].forEach(id => { $('#' + id, el).onchange = e => { const v = Number(e.target.value); if (Number.isFinite(v)) kaydetCiz({ [id]: v }); }; });
@@ -764,7 +977,13 @@ function ornekVeri(yol, p) {
       'currentEv/freeCashFlowTTM': ar(10, 80), pfcfShareTTM: ar(10, 80), epsTTM: eps, peTTM: pe, forwardPE: pe ? pe * ar(0.5, 0.9) : null,
       epsGrowth3Y: ar(-10, 50), revenueGrowth3Y: ar(-5, 35), revenueGrowth5Y: ar(0, 30), roeTTM: ar(-5, 40), roaTTM: ar(-2, 20), grossMarginTTM: ar(20, 75),
       netProfitMarginTTM: ar(-5, 30), 'totalDebt/totalEquityQuarterly': ar(0, 2.5), currentRatioQuarterly: ar(0.7, 3.5), psTTM: ar(1, 18), pbQuarterly: ar(1, 15),
-      revenueGrowthTTMYoy: ar(-10, 40), epsGrowthTTMYoy: ar(-30, 60), beta: ar(0.6, 2.6), netInterestCoverageTTM: ar(0, 40) } };
+      revenueGrowthTTMYoy: ar(-10, 40), epsGrowthTTMYoy: ar(-30, 60), beta: ar(0.6, 2.6), netInterestCoverageTTM: ar(0, 40),
+      revenueShareGrowth5Y: ar(-2, 30), operatingMarginTTM: ar(-5, 40), operatingMargin5Y: ar(0, 35), evEbitdaTTM: ar(5, 40), roiTTM: ar(-5, 35),
+      currentDividendYieldTTM: r() > 0.5 ? ar(0.3, 4) : null },
+      series: { annual: Object.fromEntries(['operatingMargin', 'netMargin', 'fcfMargin', 'roic', 'pe', 'receivablesTurnover', 'inventoryTurnover'].map(k => {
+        const taban = { pe: ar(10, 40), receivablesTurnover: ar(4, 12), inventoryTurnover: ar(3, 10) }[k] ?? ar(0.02, 0.35);
+        return [k, [2025, 2024, 2023, 2022, 2021].map((y, i) => ({ period: y + '-12-31', v: taban * (1 + ar(-0.15, 0.15) - i * ar(-0.05, 0.05)) }))];
+      })) } };
   }
   if (yol === '/stock/earnings') return ['2026-09-30', '2026-06-30', '2026-03-31', '2025-12-31'].map(d => { const e = ar(0.5, 3), a = e * ar(0.9, 1.15); return { period: d, estimate: e, actual: a, surprisePercent: (a / e - 1) * 100 }; });
   if (yol === '/calendar/earnings') { const d = gunEkle(bugunStr(), Math.floor(ar(1, 80))); return { earningsCalendar: [{ symbol: t, date: d, hour: ['bmo', 'amc', 'amc'][Math.floor(ar(0, 3))], quarter: 4, year: 2026, epsEstimate: ar(0.5, 3), revenueEstimate: ar(1e9, 3e10) }] }; }

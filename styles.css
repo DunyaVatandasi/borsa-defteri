@@ -159,3 +159,15 @@ details summary { cursor: pointer; font-weight: 700; color: var(--ana); padding:
   background: var(--metin); color: var(--zemin); padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100vw - 32px); box-shadow: var(--golge); }
 
 @media (prefers-reduced-motion: reduce) { .ikon-dugme.donuyor svg { animation: none; } }
+
+/* Eleme akışı ve kırmızı bayraklar (v6) */
+.akis { margin: 0; padding: 0 0 0 22px; display: grid; gap: 10px; }
+.akis li { padding-bottom: 10px; border-bottom: 1px solid var(--cizgi, rgba(127,127,127,.2)); }
+.akis li:last-child { border-bottom: 0; padding-bottom: 0; }
+.akis-ust { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.akis .sayi { margin: 2px 0; font-size: 14px; }
+.bayrak-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.bayrak-liste li { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.bayrak-liste label { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-weight: normal; }
+.bayrak-liste input { width: 20px; min-height: 20px; margin: 2px 0 0; flex: none; }
+.bayrak-liste small { white-space: nowrap; }
