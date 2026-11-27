@@ -1,5 +1,5 @@
 // Uygulama kabuğunu önbelleğe alır (çevrimdışı açılış). Finnhub istekleri her zaman ağdan gider.
-const SURUM = 'defter-v6'; // app.js UYGULAMA_SURUM.no ile aynı tutun
+const SURUM = 'defter-v7'; // app.js UYGULAMA_SURUM.no ile aynı tutun
 const KABUK = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg'];
 
 self.addEventListener('install', e => {

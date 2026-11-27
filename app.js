@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 6, tarih: '24.11.2026' };
+const UYGULAMA_SURUM = { no: 7, tarih: '27.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -245,7 +245,9 @@ function seri(m, ad, oran = true, esik = 1.5) {
   const s = (((m && m._seri) || {}).annual || {})[ad];
   if (!Array.isArray(s)) return [];
   const v = s.filter(x => x && sayiMi(x.v)).sort((a, b) => String(b.period).localeCompare(String(a.period))).map(x => x.v);
-  return oran && v.some(x => Math.abs(x) > esik) ? v.map(x => x / 100) : v;
+  // Birim tespiti yalnız son 5 yıla ve çoğunluğa göre: eski uç değerler (ör. TSLA'nın ilk yıllarındaki −%200 marj) tüm seriyi 100'e böldürmesin.
+  const son = v.slice(0, 5);
+  return oran && son.length && son.filter(x => Math.abs(x) > esik).length * 2 > son.length ? v.map(x => x / 100) : v;
 }
 
 /** Ham Finnhub verisinden rehberin istediği büyüklükleri türetir (milyar $). */
