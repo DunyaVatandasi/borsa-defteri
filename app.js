@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 7, tarih: '27.11.2026' };
+const UYGULAMA_SURUM = { no: 8, tarih: '27.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -426,7 +426,7 @@ function reverseDcf(deger, fcf, r, tg, n) {
 }
 
 // ---------------------------------------------------------------- yönlendirme
-const EKRANLAR = { portfoy: ekranPortfoy, analiz: ekranAnaliz, takvim: ekranTakvim, insider: ekranInsider, orb: ekranOrb, ayarlar: ekranAyarlar };
+const EKRANLAR = { portfoy: ekranPortfoy, analiz: ekranAnaliz, zincir: ekranZincir, insider: ekranInsider, orb: ekranOrb, ayarlar: ekranAyarlar };
 let aktif = { ad: '', param: '', yenile: false };
 
 function yonlendir(yenile = false) {
@@ -564,12 +564,11 @@ async function ekranAnaliz(main, param, yenile) {
   }
 }
 
-function analizCiz(el, t, m, q, pr, kz) {
+/** Temel analizin tüm hesapları (Analiz ve Zincir ekranları ortak kullanır). */
+function temelHesapla(t, m, q, pr, kz) {
   const a = ayarlar();
   const fiyat = sayiMi(q.c) && q.c > 0 ? q.c : null;
   const sen = senaryolar(m, fiyat, a);
-  const lo = m['52WeekLow'], hi = m['52WeekHigh'];
-  const konum = sayiMi(fiyat) && sayiMi(lo) && sayiMi(hi) && hi > lo ? (fiyat - lo) / (hi - lo) : null;
   const ev = sayiMi(m.enterpriseValue) ? m.enterpriseValue / 1000 : null;
   const pd = sayiMi(m.marketCapitalization) ? m.marketCapitalization / 1000 : sayiMi(pr.marketCapitalization) ? pr.marketCapitalization / 1000 : null;
   const evFcf = ilk(m, ['currentEv/freeCashFlowTTM', 'currentEv/freeCashFlowAnnual']);
@@ -589,6 +588,13 @@ function analizCiz(el, t, m, q, pr, kz) {
   const bayrakVar = i => oto[i] === true || (oto[i] === undefined && elleKayit.includes(i));
   const bayrakSay = BAYRAKLAR.filter((_, i) => bayrakVar(i)).length;
   const sorunlar = veriKontrol(sen.fkTtm, pd, fcf, dcf, fiyat);
+  return { a, fiyat, sen, ev, pd, fcf, tr, p, rd, dcf, baz, tut, akis, elenen, dikkatSay, oto, bayrakVar, bayrakSay, sorunlar };
+}
+
+function analizCiz(el, t, m, q, pr, kz) {
+  const { a, fiyat, sen, ev, pd, fcf, tr, p, rd, dcf, tut, akis, elenen, dikkatSay, oto, bayrakVar, bayrakSay, sorunlar } = temelHesapla(t, m, q, pr, kz);
+  const lo = m['52WeekLow'], hi = m['52WeekHigh'];
+  const konum = sayiMi(fiyat) && sayiMi(lo) && sayiMi(hi) && hi > lo ? (fiyat - lo) / (hi - lo) : null;
   const veriUyari = sorunlar.length ? `<div class="uyari kirmizi-kutu" role="alert"><b>⚠️ Veri tutarsız görünüyor</b> — ${esc(sorunlar.join(' · '))}.
     Finnhub verisinde hata olabilir (ör. yeni ayrılan şirketlerde ölçek sorunu). Hedefleri ve değerlemeleri kullanmayın.</div>` : '';
   const g3 = sayiMi(m.revenueGrowth3Y) ? m.revenueGrowth3Y / 100 : null;
@@ -742,28 +748,387 @@ function portfoyBos(main, ne) {
   main.innerHTML = `<div class="kart bos"><h2>Portföy boş</h2><p>${ne} için önce Portföy'e hisse ekle.</p><a class="dugme" href="#portfoy">Portföy'e git</a></div>`;
 }
 
-// ---------------------------------------------------------------- TAKVİM
-async function ekranTakvim(main, _p, yenile) {
-  const liste = portfoySorgulari();
-  if (!liste.length) return portfoyBos(main, 'Bilanço takvimi');
-  if (!veriVarMi()) return anahtarYok(main);
-  const n = ayarlar().hatirlatGun;
-  main.innerHTML = `<div class="kart"><h2>📅 Bilanço takvimi <small>· önümüzdeki 90 gün</small></h2><div id="tk" class="yukleniyor">Yükleniyor…</div>
-    <p class="alt" style="margin:10px 0 0">${n} gün içindekiler vurgulanır. Tarihleri şirketler değiştirebilir. Kaldıraçlı ETF için pozisyonda "dayanak hisse" alanını doldur.</p></div>`;
-  const sonuc = [];
-  for (const h of liste) {
-    try { sonuc.push({ ...h, e: await api.takvim(h.t, yenile) }); } catch (e) { sonuc.push({ ...h, hata: e.message }); }
-    if (aktif.ad !== 'takvim') return;
+// ---------------------------------------------------------------- ZİNCİR (hisse akışı)
+// Tarama → seçim → temel + teknik → yön → spot hedef/stop → opsiyon alternatifleri.
+// Tarama, fiyat geçmişi ve opsiyon zinciri Apps Script aracısından (ORB web uygulaması, apps-script/Zincir.gs) gelir;
+// temel veri Finnhub. Hesaplar bilgisayardaki araclar/hisse_akisi/*.py ile aynı mantıktadır. Kendi yöntemimiz; yatırım tavsiyesi değildir.
+const ZINCIR_HAZIR = [
+  ['Aşırı satılmış büyükler', 'cap_largeover,ta_rsi_os30'],
+  ['Trend + momentum', 'cap_midover,ta_sma50_pa,ta_sma200_pa,ta_perf_4wup,sh_avgvol_o1000'],
+  ['Kaliteli, makul F/K', 'cap_largeover,fa_pe_u20,fa_roe_o15,fa_epsqoq_pos'],
+  ['52H zirveye yakın', 'cap_midover,ta_highlow52w_b0to5h,ta_sma50_pa'],
+  ['Geri çekilen büyüme', 'cap_midover,ta_highlow52w_10to30-bhx,fa_epsqoq_o25,fa_salesqoq_o25']
+];
+const zBellek = new Map();
+async function zincirAl(param, sure = 5 * 6e4, yenile = false) {
+  const qs = new URLSearchParams(param).toString();
+  const c = zBellek.get(qs); if (!yenile && c && c.son > Date.now()) return c.v;
+  let r;
+  try { r = await fetch(orbAdres() + (orbAdres().includes('?') ? '&' : '?') + qs, { cache: 'no-store' }); }
+  catch { throw new Error('Aracıya ulaşılamadı (internet bağlantısı?).'); }
+  if (!r.ok) throw new Error('Aracı yanıtı HTTP ' + r.status);
+  const v = await r.json();
+  if (!v || !v.ok) throw new Error((v && v.hata) || 'Aracı hatası');
+  zBellek.set(qs, { v, son: Date.now() + sure });
+  return v;
+}
+
+// --- teknik göstergeler (seviyeler.py ile aynı)
+const zOrt = (a, n) => a.length >= n ? a.slice(-n).reduce((x, y) => x + y, 0) / n : null;
+function zEma(a, span) { const k = 2 / (span + 1), o = [a[0]]; for (let i = 1; i < a.length; i++) o.push(a[i] * k + o[i - 1] * (1 - k)); return o; }
+function zWilder(a, n = 14) { const k = 1 / n, o = []; let p = null; for (const v of a) { if (sayiMi(v)) p = p === null ? v : v * k + p * (1 - k); o.push(p); } return o; }
+function zGostergeler(g) {
+  const { h, l, c } = g, n = c.length, s = n - 1;
+  const e12 = zEma(c, 12), e26 = zEma(c, 26), macd = e12.map((v, i) => v - e26[i]), sig = zEma(macd, 9), hist = macd.map((v, i) => v - sig[i]);
+  const d = c.map((v, i) => i ? v - c[i - 1] : null);
+  const up = zWilder(d.map(x => x === null ? null : Math.max(x, 0))), dn = zWilder(d.map(x => x === null ? null : Math.max(-x, 0)));
+  const rsi = dn[s] > 0 ? 100 - 100 / (1 + up[s] / dn[s]) : 100;
+  const tr = c.map((_, i) => i ? Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])) : h[i] - l[i]);
+  const atr = zWilder(tr);
+  const dm = (yon) => c.map((_, i) => { if (!i) return 0; const u = h[i] - h[i - 1], w = l[i - 1] - l[i]; return yon > 0 ? (u > w && u > 0 ? u : 0) : (w > u && w > 0 ? w : 0); });
+  const ps = zWilder(dm(1)), ns = zWilder(dm(-1));
+  const pdi = ps.map((v, i) => 100 * v / atr[i]), ndi = ns.map((v, i) => 100 * v / atr[i]);
+  const adx = zWilder(pdi.map((v, i) => v + ndi[i] > 0 ? 100 * Math.abs(v - ndi[i]) / (v + ndi[i]) : null));
+  const ret = c.slice(-21).map((v, i, a) => i ? Math.log(v / a[i - 1]) : null).slice(1);
+  const mu = ret.reduce((x, y) => x + y, 0) / ret.length;
+  const hv20 = Math.sqrt(ret.reduce((x, y) => x + (y - mu) ** 2, 0) / (ret.length - 1)) * Math.sqrt(252);
+  let kesisim = null;
+  for (let i = 1; i < Math.min(30, n - 1); i++) { const a = hist[n - i], b = hist[n - i - 1]; if ((a > 0) !== (b > 0)) { kesisim = { yon: a > 0 ? 'yukarı' : 'aşağı', gun: i - 1 }; break; } }
+  const s200 = zOrt(c, 200), s200once = n > 220 ? zOrt(c.slice(0, n - 20), 200) : null;
+  return { fiyat: c[s], sma20: zOrt(c, 20), sma50: zOrt(c, 50), sma200: s200, s200egim: s200once ? (s200 / s200once - 1) * 100 : null,
+    rsi, macd: macd[s], sinyal: sig[s], hist: hist[s], kesisim, adx: adx[s], diArti: pdi[s], diEksi: ndi[s],
+    atr: atr[s], hv20, hi52: Math.max(...h.slice(-252)), lo52: Math.min(...l.slice(-252)) };
+}
+function zSalinim(h, l, k = 2) {
+  const t = [], d = [];
+  for (let i = k; i < h.length - k; i++) {
+    if (h[i] === Math.max(...h.slice(i - k, i + k + 1))) t.push([i, h[i]]);
+    if (l[i] === Math.min(...l.slice(i - k, i + k + 1))) d.push([i, l[i]]);
   }
-  sonuc.sort((a, b) => (a.e ? a.e.date : '9999').localeCompare(b.e ? b.e.date : '9999'));
-  $('#tk', main).className = '';
-  $('#tk', main).innerHTML = `<ul class="liste">${sonuc.map(s => {
-    const k = s.e ? kalanGun(s.e.date) : null;
-    return `<li class="satir ${k !== null && k <= n ? 'yakin' : ''}" onclick="location.hash='analiz/${encodeURIComponent(s.t)}'">
-      <div class="sol"><div class="kod">${esc(s.etiket)}</div><div class="alt">${s.e ? (SAAT[s.e.hour] || 'saat belirsiz') + ' · ' + s.e.year + ' Ç' + s.e.quarter : s.hata ? esc(s.hata) : '90 gün içinde tarih yok' + (s.etf ? ' · ETF ise dayanak hisse ekle' : '')}</div></div>
-      <div class="sag">${s.e ? `<div class="kod">${tarihTR(s.e.date)}</div><div class="alt"><span class="cip ${k <= n ? 'sari' : ''}">${k === 0 ? 'bugün' : k + ' gün'}</span></div>` : ''}
-        ${s.e && sayiMi(s.e.epsEstimate) ? `<div class="alt">EPS bekl. ${usd(s.e.epsEstimate)}</div>` : ''}</div></li>`;
-  }).join('')}</ul>`;
+  return [t, d];
+}
+function zBolgeler(gun, hafta, atr) {
+  const h = gun.h.slice(-252), l = gun.l.slice(-252), c = gun.c.slice(-252), n = c.length, nk = [];
+  zSalinim(h, l).forEach(ls => ls.forEach(([i, p]) => nk.push([p, 1 + (i >= n - 63 ? 1 : 0)])));
+  if (hafta && hafta.h && hafta.h.length > 10) zSalinim(hafta.h.slice(-156), hafta.l.slice(-156)).forEach(ls => ls.forEach(([, p]) => nk.push([p, 2])));
+  nk.sort((a, b) => a[0] - b[0]);
+  const tol = Math.min(0.5 * atr, 0.015 * c[n - 1]), gr = []; let b = [];
+  for (const x of nk) { if (b.length && x[0] - b[0][0] > tol) { gr.push(b); b = []; } b.push(x); }
+  if (b.length) gr.push(b);
+  return gr.map(b => { const w = b.reduce((s, x) => s + x[1], 0), alt = b[0][0], ust = b[b.length - 1][0];
+    return { fiyat: b.reduce((s, x) => s + x[0] * x[1], 0) / w, guc: w, tur: 'salınım', ad: alt === ust ? 'salınım ' + sayi(alt, 2) : 'bölge ' + sayi(alt, 2) + '–' + sayi(ust, 2) }; });
+}
+function zYonSkoru(g) {
+  let s = 0; const n = [], f = g.fiyat;
+  if (sayiMi(g.sma50)) { s += f > g.sma50 ? 20 : -20; n.push('fiyat SMA50\'nin ' + (f > g.sma50 ? 'üstünde' : 'altında')); }
+  if (sayiMi(g.sma50) && sayiMi(g.sma200)) { s += g.sma50 > g.sma200 ? 20 : -20; n.push('SMA50 ' + (g.sma50 > g.sma200 ? '>' : '<') + ' SMA200'); }
+  if (sayiMi(g.s200egim)) { const e = g.s200egim; s += e > 0.5 ? 10 : e < -0.5 ? -10 : 0; n.push('SMA200 eğimi ' + (e > 0.5 ? 'yukarı' : e < -0.5 ? 'aşağı' : 'yatay')); }
+  if (sayiMi(g.hist)) { s += g.hist > 0 ? 15 : -15; n.push('MACD ' + (g.hist > 0 ? 'pozitif' : 'negatif') + (g.kesisim ? ' (' + (g.kesisim.gun ? g.kesisim.gun + ' gün önce ' : 'bugün ') + g.kesisim.yon + ' kesti)' : '')); }
+  if (sayiMi(g.rsi)) { s += g.rsi >= 55 ? 15 : g.rsi <= 45 ? -15 : 0; n.push('RSI ' + sayi(g.rsi)); }
+  if (sayiMi(g.adx)) { const guclu = g.adx >= 25, y = g.diArti > g.diEksi ? 1 : -1; s += (guclu ? 20 : 5) * y; n.push('ADX ' + sayi(g.adx) + ' (' + (guclu ? 'güçlü' : 'zayıf') + ' trend, ' + (y > 0 ? '+DI' : '−DI') + ' önde)'); }
+  return { skor: Math.max(-100, Math.min(100, s)), nedenler: n };
+}
+function zPlan(alt, f, atr, destek, direnc, sigma30, uzak) {
+  const koruma = alt ? destek : direnc, hedefTaraf = alt ? direnc : destek;
+  const guclu = koruma.filter(x => x.guc >= 2 || x.tur !== 'salınım');
+  const dayanak = guclu[0] || koruma[0] || null, notlar = [];
+  let stop, stopNeden;
+  if (dayanak) { stop = alt ? dayanak.fiyat - 0.5 * atr : dayanak.fiyat + 0.5 * atr; stopNeden = dayanak.ad + ' (' + sayi(dayanak.fiyat, 2) + ') ' + (alt ? 'altı − 0,5 ATR' : 'üstü + 0,5 ATR'); }
+  else { stop = alt ? f - 2 * atr : f + 2 * atr; stopNeden = 'yakın seviye yok: 2 ATR'; }
+  const risk = Math.abs(f - stop);
+  let sikStop = null;
+  if (risk > 3 * atr) { sikStop = alt ? f - 2 * atr : f + 2 * atr; notlar.push('Yapısal stop ' + sayi(risk / atr) + ' ATR uzakta; daha sıkı seçenek 2 ATR: ' + sayi(sikStop, 2) + '.'); }
+  const rr = p => risk ? Math.abs(p - f) / risk : null;
+  const hedefler = hedefTaraf.slice(0, 3).map(x => ({ ad: x.ad, fiyat: x.fiyat, rr: rr(x.fiyat) }));
+  uzak.filter(u => alt ? u.fiyat > f : u.fiyat < f).forEach(u => hedefler.push({ ad: u.ad, fiyat: u.fiyat, rr: rr(u.fiyat), uzak: true }));
+  const hm = alt ? f + sigma30 : f - sigma30;
+  hedefler.push({ ad: '30 günlük 1σ hareket (HV20)', fiyat: hm, rr: rr(hm), olasilik: true });
+  const yakin = hedefler.filter(h => !h.uzak && !h.olasilik);
+  if (yakin.length && yakin[0].rr < 1.5) notlar.push('İlk hedefin R/R\'si ' + sayi(yakin[0].rr, 2) + ' (< 1,5): şu fiyattan giriş zayıf; geri çekilme beklenebilir.');
+  if (!yakin.length) notlar.push('Bu yönde yakın teknik seviye yok (zirve/dip bölgesi); hedefler ATR ve uzak hedeflerden.');
+  return { alt, giris: f, altGiris: koruma[0] ? koruma[0].fiyat : null, stop, stopNeden, risk, sikStop, hedefler, notlar };
+}
+
+// --- opsiyon (opsiyon.py ile aynı)
+function zNcdf(x) { const t = 1 / (1 + 0.2316419 * Math.abs(x)), d = 0.3989422804014327 * Math.exp(-x * x / 2); const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))); return x > 0 ? 1 - p : p; }
+function zBs(S, K, T, r, s, tip) {
+  if (T <= 0 || s <= 0) return tip === 'call' ? Math.max(0, S - K) : Math.max(0, K - S);
+  const d1 = (Math.log(S / K) + (r + s * s / 2) * T) / (s * Math.sqrt(T)), d2 = d1 - s * Math.sqrt(T);
+  return tip === 'call' ? S * zNcdf(d1) - K * Math.exp(-r * T) * zNcdf(d2) : K * Math.exp(-r * T) * zNcdf(-d2) - S * zNcdf(-d1);
+}
+function zDelta(S, K, T, r, s, tip) { const d1 = (Math.log(S / K) + (r + s * s / 2) * T) / (s * Math.sqrt(T)); return tip === 'call' ? zNcdf(d1) : zNcdf(d1) - 1; }
+function zIv(p, S, K, T, r, tip) { if (!(p > 0) || zBs(S, K, T, r, 5, tip) < p) return null; let lo = 0.01, hi = 5; for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (zBs(S, K, T, r, m, tip) > p) hi = m; else lo = m; } return (lo + hi) / 2; }
+function zZincir(liste, tip, S, T, r) {
+  return (liste || []).map(x => {
+    const canli = x.b > 0 && x.a > 0, orta = canli ? (x.b + x.a) / 2 : x.s;
+    let iv = x.iv > 0.01 ? x.iv : null; if (iv === null && orta > 0) iv = zIv(orta, S, x.k, T, r, tip);
+    return { k: x.k, b: x.b, a: x.a, orta, canli, makas: canli && orta > 0 ? (x.a - x.b) / orta : null, iv, oi: x.oi || 0, delta: iv ? zDelta(S, x.k, T, r, iv, tip) : null };
+  }).sort((a, b) => a.k - b.k);
+}
+function zLikidite(z, k) {
+  const i = z.findIndex(x => x.k === k); if (i < 0) return [false, 'strike yok'];
+  const x = z[i]; let oiOk = x.oi >= 500;
+  if (!oiOk) { const kom = z.slice(Math.max(0, i - 2), i + 3); oiOk = kom.length === 5 && kom.every(y => y.oi >= 100); }
+  const n = [];
+  if (!oiOk) n.push('OI ' + x.oi + ' (< 500)');
+  if (x.makas === null) n.push('canlı alış/satış yok'); else if (x.makas > 0.10) n.push('makas %' + Math.round(x.makas * 100) + ' (> %10)');
+  return [oiOk && x.makas !== null && x.makas <= 0.10, n.join(', ') || 'uygun'];
+}
+const zEnYakin = (z, hedef, kosul) => { const d = z.filter(x => x.orta > 0 && (!kosul || kosul(x))); return d.length ? d.reduce((a, b) => Math.abs(b.k - hedef) < Math.abs(a.k - hedef) ? b : a) : null; };
+const zDeltaIle = (z, hd) => { const d = z.filter(x => x.orta > 0 && sayiMi(x.delta)); return d.length ? d.reduce((a, b) => Math.abs(Math.abs(b.delta) - hd) < Math.abs(Math.abs(a.delta) - hd) ? b : a) : null; };
+const zBacak = (x, islem, tip) => ({ islem, tip, k: x.k, orta: x.orta, delta: x.delta, iv: x.iv, oi: x.oi, canli: x.canli });
+function zKz(bacaklar, f) { let t = 0; for (const b of bacaklar) { const ic = b.tip === 'call' ? Math.max(0, f - b.k) : Math.max(0, b.k - f); t += b.islem === 'al' ? ic - b.orta : b.orta - ic; } return t * 100; }
+function zUst(S, K, T, s) { if (T <= 0 || s <= 0) return S > K ? 1 : 0; return zNcdf((Math.log(S / K) - s * s / 2 * T) / (s * Math.sqrt(T))); }
+function zYapi(ad, bacaklar, c) {
+  const { S, hedef, stop, T, sigma, z } = c, kredi = bacaklar.some(b => b.islem === 'sat') && bacaklar.reduce((s, b) => s + (b.islem === 'al' ? b.orta : -b.orta), 0) < 0;
+  const net = bacaklar.reduce((s, b) => s + (b.islem === 'al' ? b.orta : -b.orta), 0);
+  const N = 1401, grid = Array.from({ length: N }, (_, i) => S * 0.3 + (S * 1.7) * i / (N - 1)), pl = grid.map(x => zKz(bacaklar, x));
+  const maksKar = Math.max(...pl), maksZarar = Math.min(...pl), sinirsiz = pl[N - 1] > pl[N - 50] + 1 && pl[N - 1] === maksKar;
+  const bb = []; for (let i = 0; i < N - 1; i++) if (pl[i] * pl[i + 1] < 0) bb.push(grid[i] + (grid[i + 1] - grid[i]) * (-pl[i]) / (pl[i + 1] - pl[i]));
+  let pop;
+  if (bb.length) { const nk = [S * 0.3, ...bb, S * 2]; pop = 0; for (let i = 0; i < nk.length - 1; i++) if (zKz(bacaklar, (nk[i] + nk[i + 1]) / 2) > 0) pop += zUst(S, nk[i], T, sigma) - zUst(S, nk[i + 1], T, sigma); }
+  else pop = maksZarar > 0 ? 1 : 0;
+  const u = [];
+  bacaklar.forEach(b => { const [ok, n] = zLikidite(z[b.tip], b.k); if (!ok) u.push('Likidite (' + b.islem + ' ' + b.k + ' ' + b.tip + '): ' + n);
+    if (kredi && b.islem === 'sat' && sayiMi(b.delta) && (Math.abs(b.delta) < 0.2 || Math.abs(b.delta) > 0.3)) u.push('Kısa bacak deltası ' + nf(2).format(Math.abs(b.delta)) + ' (kural 0,20–0,30)'); });
+  const st = [...new Set(bacaklar.map(b => b.k))].sort((a, b) => a - b);
+  if (st.length > 1) { const gen = Math.max(...st.slice(1).map((v, i) => v - st[i])); if (gen > 0.04 * S) u.push('Spread genişliği ' + gen + ' $ = fiyatın %' + nf(1).format(gen / S * 100) + '\'i (kural ≤ %4)'); }
+  const hk = zKz(bacaklar, hedef);
+  return { ad, bacaklar, net: net * 100, kredi, maksKar: sinirsiz ? null : maksKar, maksZarar, bb, hedefKz: hk, stopKz: zKz(bacaklar, stop), pop, rr: maksZarar < 0 ? hk / -maksZarar : null, uyarilar: u, geriAlim: kredi ? -net / 2 : null };
+}
+function zVadeSec(vadeler, bilanco) {
+  const u = [], aday = vadeler.map(v => [v, kalanGun(v)]);
+  const uygun = aday.filter(x => x[1] >= 21 && x[1] <= 45), temiz = uygun.filter(x => !(bilanco && bilanco >= bugunStr() && bilanco <= x[0]));
+  const havuz = temiz.length ? temiz : uygun.length ? uygun : aday;
+  if (!temiz.length && uygun.length) u.push('21–45 gün aralığındaki tüm vadeler bilançoyu kapsıyor.');
+  if (!uygun.length) u.push('21–45 gün aralığında vade yok; 30 güne en yakın seçildi.');
+  return [havuz.reduce((a, b) => Math.abs(b[1] - 30) < Math.abs(a[1] - 30) ? b : a)[0], u];
+}
+function zOpsiyonHesapla(oz, c) {
+  const { S, T, r, yon, hedef, stop } = c;
+  const z = { call: zZincir(oz.call, 'call', S, T, r), put: zZincir(oz.put, 'put', S, T, r) };
+  const atm = ['call', 'put'].map(tp => zEnYakin(z[tp], S)).filter(x => x && sayiMi(x.iv));
+  const sigma = atm.length ? atm.reduce((s, x) => s + x.iv, 0) / atm.length : c.hv20;
+  const ac = zEnYakin(z.call, S), ap = zEnYakin(z.put, S), straddle = ac && ap ? ac.orta + ap.orta : null;
+  let ivd, olcut;
+  if (sayiMi(c.ivRank)) { ivd = c.ivRank >= 50 ? 'pahalı' : c.ivRank <= 25 ? 'ucuz' : 'normal'; olcut = 'IV rank ' + c.ivRank; }
+  else { const o = c.hv20 ? sigma / c.hv20 : null; ivd = o >= 1.25 ? 'pahalı' : o !== null && o <= 0.9 ? 'ucuz' : 'normal'; olcut = o !== null ? 'IV/HV20 = ' + nf(2).format(o) + ' (IV rank girilmedi)' : 'hesaplanamadı'; }
+  const ctx = { S, hedef, stop, T, sigma, z }, yapilar = [];
+  if (yon === 'yukari' || yon === 'asagi') {
+    const alt = yon === 'yukari', tip = alt ? 'call' : 'put', karsi = alt ? 'put' : 'call', df = z[tip], dk = z[karsi];
+    const uzun = zDeltaIle(df, 0.6); if (uzun) yapilar.push(zYapi('Uzun ' + tip + ' (~0,60 delta)', [zBacak(uzun, 'al', tip)], ctx));
+    const al = zEnYakin(df, S);
+    const sat = al ? zEnYakin(df, hedef, x => alt ? x.k > al.k : x.k < al.k) : null;
+    const etk = alt ? 'Boğa call' : 'Ayı put';
+    if (al && sat && sat.k !== al.k) yapilar.push(zYapi(etk + ' spread (borç): ATM al, hedefte sat', [zBacak(al, 'al', tip), zBacak(sat, 'sat', tip)], ctx));
+    if (al) { const sinir = alt ? al.k + 0.04 * S : al.k - 0.04 * S;
+      const dar = zEnYakin(df, sinir, x => alt ? x.k > al.k && x.k <= sinir : x.k < al.k && x.k >= sinir);
+      if (dar && (!sat || dar.k !== sat.k)) yapilar.push(zYapi(etk + ' spread (borç, ≤ %4 genişlik)', [zBacak(al, 'al', tip), zBacak(dar, 'sat', tip)], ctx)); }
+    const otesi = dk.filter(x => (alt ? x.k <= stop : x.k >= stop) && sayiMi(x.delta) && x.orta > 0);
+    const kisa = otesi.length ? otesi.reduce((a, b) => Math.abs(Math.abs(b.delta) - 0.25) < Math.abs(Math.abs(a.delta) - 0.25) ? b : a) : zDeltaIle(dk, 0.25);
+    if (kisa) { const uk = zEnYakin(dk, alt ? kisa.k - 0.04 * S : kisa.k + 0.04 * S, x => alt ? x.k < kisa.k : x.k > kisa.k);
+      if (uk) yapilar.push(zYapi((alt ? 'Boğa put' : 'Ayı call') + ' spread (kredi): kısa bacak stop\'un ötesinde', [zBacak(kisa, 'sat', karsi), zBacak(uk, 'al', karsi)], ctx)); }
+  } else {
+    const kp = zDeltaIle(z.put.filter(x => x.k <= c.alt), 0.25) || zDeltaIle(z.put, 0.25), kc = zDeltaIle(z.call.filter(x => x.k >= c.ust), 0.25) || zDeltaIle(z.call, 0.25);
+    if (kp && kc) { const up = zEnYakin(z.put, kp.k - 0.04 * S, x => x.k < kp.k), uc = zEnYakin(z.call, kc.k + 0.04 * S, x => x.k > kc.k);
+      if (up && uc) yapilar.push(zYapi('Demir kondor (kredi): kısa bacaklar destek/direnç dışında', [zBacak(up, 'al', 'put'), zBacak(kp, 'sat', 'put'), zBacak(kc, 'sat', 'call'), zBacak(uc, 'al', 'call')], { ...ctx, hedef: S, stop: c.ust })); }
+  }
+  const sira = y => ivd === 'pahalı' ? [y.kredi ? 0 : y.bacaklar.length === 1 ? 2 : 1, y.uyarilar.length] : ivd === 'ucuz' ? [y.kredi ? 2 : 0, y.uyarilar.length] : [y.uyarilar.length, 0];
+  yapilar.sort((a, b) => { const x = sira(a), y = sira(b); return x[0] - y[0] || x[1] - y[1]; });
+  if (ivd === 'pahalı') yapilar.forEach(y => { if (y.bacaklar.length === 1) y.uyarilar.push('Opsiyonlar pahalı: kural tanımlı riskli yapı istiyor.'); });
+  return { sigma, straddle, ivd, olcut, boyut: { ucuz: 0.5, normal: 1, pahalı: 0.6 }[ivd], yapilar, canliYok: !z.call.some(x => x.canli) };
+}
+
+// --- ekranlar
+function ekranZincir(main, param, yenile) {
+  const t = kod(param);
+  if (t) return zincirHisse(main, t, yenile);
+  const son = depo.al('zTarama', null);
+  main.innerHTML = `
+  <form class="kart" id="z-form"><h2>⛓️ Hisse akışı <small>· 1. adım: tarama</small></h2>
+    <p class="alt" style="margin-top:0">Tarama → seçim → temel + teknik → yön → hedef/stop → opsiyon.</p>
+    <label>Hazır kriter<select id="z-hazir"><option value="">— seç ya da kodları yaz —</option>${ZINCIR_HAZIR.map(([ad, f]) => `<option value="${esc(f)}">${esc(ad)}</option>`).join('')}</select></label>
+    <label>FinViz filtre kodları <small>(virgülle; boş = yalnız trend)</small><input id="z-filtre" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ör. cap_largeover,ta_rsi_os30" value="${esc((son && son.filtre) || '')}"></label>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="z-trend" ${!son || son.trend ? 'checked' : ''} style="width:auto"> Reddit + StockTwits trend listesi</label>
+    <div class="dugmeler"><button class="dugme" type="submit">Tara</button><span class="bosluk"></span><span class="alt">${son ? 'son tarama ' + onceSure(son.zaman) : ''}</span></div>
+  </form>
+  <form class="kart ara" id="z-kod"><input id="z-kod-in" placeholder="ya da hisse kodu (ör. TSLA)" autocomplete="off" autocapitalize="characters" maxlength="10" aria-label="Hisse kodu"><button class="dugme" type="submit">Akışa başla</button></form>
+  <div id="z-sonuc"></div>`;
+  $('#z-hazir', main).onchange = e => { if (e.target.value) $('#z-filtre', main).value = e.target.value; };
+  $('#z-kod', main).onsubmit = e => { e.preventDefault(); const v = kod($('#z-kod-in', main).value); if (v) location.hash = 'zincir/' + encodeURIComponent(v); };
+  const sonucEl = $('#z-sonuc', main);
+  if (son) zTaramaCiz(sonucEl, son);
+  $('#z-form', main).onsubmit = async e => {
+    e.preventDefault();
+    const filtre = $('#z-filtre', main).value.trim().replace(/\s+/g, ''), trend = $('#z-trend', main).checked;
+    if (!filtre && !trend) { bildir('Filtre yaz ya da trend listesini seç.'); return; }
+    sonucEl.innerHTML = '<div class="kart yukleniyor">Taranıyor… (20–40 sn sürebilir)</div>';
+    try {
+      const p = { islem: 'tarama', adet: 20 }; if (filtre) p.finviz = filtre; if (trend) p.trend = '1';
+      const v = await zincirAl(p, 10 * 6e4, true);
+      const kayit = { filtre, trend, zaman: new Date().toISOString(), v };
+      depo.koy('zTarama', kayit);
+      if (aktif.ad === 'zincir') zTaramaCiz(sonucEl, kayit);
+    } catch (err) { sonucEl.innerHTML = hataKutusu(err); }
+  };
+}
+function zTaramaCiz(el, k) {
+  const v = k.v, ad = v.adaylar || [];
+  el.innerHTML = `<div class="kart"><h2>2. adım: seç <small>· ${ad.length} aday</small></h2>
+    ${(v.hatalar || []).length ? `<div class="uyari">⚠️ ${esc(v.hatalar.join(' · '))}</div>` : ''}
+    <p class="alt" style="margin-top:0">İncelemek istediğine dokun. Sıra: 1A değişim · RSI · SMA50'ye uzaklık · zirveden uzaklık.${v.adres ? ` <a href="${esc(v.adres)}" target="_blank" rel="noopener">FinViz'de aç ↗</a>` : ''}</p>
+    <ul class="liste">${ad.map(x => `<li class="satir" onclick="location.hash='zincir/${encodeURIComponent(x.ticker)}'">
+      <div class="sol"><div class="kod">${esc(x.ticker)} ${x.kaynak.map(s => `<span class="cip${x.kaynak.length > 1 ? ' yesil' : ''}">${esc(s)}</span>`).join(' ')}</div>
+        <div class="alt">${esc(x.sirket || '')}${x.sektor ? ' · ' + esc(x.sektor) : ''}${x.piyasa_degeri ? ' · ' + esc(x.piyasa_degeri) : ''}</div>
+        <div class="alt">${sayiMi(x.degisim_1a) ? yuzde(x.degisim_1a / 100) + ' 1A' : ''}${sayiMi(x.rsi14) ? ' · RSI ' + sayi(x.rsi14) : ''}${sayiMi(x.sma50) ? ' · SMA50 ' + yuzde(x.sma50 / 100) : ''}${sayiMi(x.zirve) ? ' · zirve ' + yuzde(x.zirve / 100) : ''}</div>
+        ${x.not ? `<div style="margin-top:3px"><span class="cip sari">⚠️ ${esc(x.not)}</span></div>` : ''}</div>
+      <div class="sag"><div class="kod">${usd(x.fiyat)}</div></div></li>`).join('')}</ul>
+    <p class="alt" style="margin:10px 0 0">ETF ve endeksler (SPY, QQQ…) trend listesinde çıkabilir. Kaynaklar: FinViz, ApeWisdom (Reddit), StockTwits, Yahoo (~15 dk gecikmeli). Yatırım tavsiyesi değildir.</p></div>`;
+}
+
+async function zincirHisse(main, t, yenile) {
+  main.innerHTML = `<div class="kart" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <a href="#zincir">← Tarama</a><a href="#analiz/${encodeURIComponent(t)}">Tam analiz →</a></div>
+    <div id="z-ust"><div class="kart yukleniyor">${esc(t)} yükleniyor… (Finnhub + fiyat geçmişi)</div></div>
+    <div id="z-temel"></div><div id="z-teknik"></div><div id="z-plan"></div><div id="z-ops"></div>`;
+  if (!veriVarMi()) return anahtarYok($('#z-ust', main));
+  if (ayarlar().demo) { $('#z-ust', main).innerHTML = '<div class="uyari">Zincir örnek veri modunda çalışmaz; Ayarlar\'dan Finnhub anahtarını gir.</div>'; return; }
+  let m, q, pr, kz, tk, gc;
+  try {
+    [m, q, pr, kz, tk, gc] = await Promise.all([api.metrik(t, yenile), api.fiyat(t, yenile), api.profil(t, yenile).catch(() => ({})),
+      api.kazanc(t, yenile).catch(() => []), api.takvim(t, yenile).catch(() => null), zincirAl({ islem: 'gecmis', t }, 15 * 6e4, yenile)]);
+  } catch (e) { $('#z-ust', main).innerHTML = e.message === 'ANAHTAR' ? '' : hataKutusu(e); return; }
+  if (aktif.ad !== 'zincir' || kod(aktif.param) !== t) return;
+  kz = Array.isArray(kz) ? kz : []; pr = pr || {}; q = q || {};
+
+  // 3a) Temel
+  const T = temelHesapla(t, m, q, pr, kz);
+  // 3b) Teknik + seviyeler
+  const g = zGostergeler(gc.gun), f = g.fiyat, atr = g.atr;
+  const sev = zBolgeler(gc.gun, gc.hafta, atr);
+  [['SMA50', g.sma50], ['SMA200', g.sma200], ['52H zirve', g.hi52], ['52H dip', g.lo52]].forEach(([ad, v]) => { if (sayiMi(v)) sev.push({ fiyat: v, guc: 2, tur: ad, ad }); });
+  const esik = 0.25 * atr;
+  const destek = sev.filter(s => s.fiyat < f - esik).sort((a, b) => b.fiyat - a.fiyat);
+  const direnc = sev.filter(s => s.fiyat > f + esik).sort((a, b) => a.fiyat - b.fiyat);
+  const test = sev.filter(s => Math.abs(s.fiyat - f) <= esik);
+  // 4) Yön
+  const ys = zYonSkoru(g);
+  const teknikYon = ys.skor >= 25 ? 'Yukarı' : ys.skor <= -25 ? 'Aşağı' : 'Yatay / kararsız';
+  const bp = T.sen.beklenenPot;
+  const temelIsaret = T.sorunlar.length || !sayiMi(bp) ? null : bp > 0.10 ? 'yukarı' : bp < -0.10 ? 'aşağı' : 'nötr';
+  const uyum = temelIsaret === null ? 'temel veri yetersiz' : temelIsaret === 'nötr' ? 'temel nötr' : (temelIsaret === 'yukarı') === (ys.skor > 0) ? 'uyumlu' : 'çelişkili';
+  const uzak = [];
+  if (!T.sorunlar.length) {
+    if (sayiMi(T.sen.beklenen)) uzak.push({ ad: 'Temel beklenen değer', fiyat: T.sen.beklenen });
+    if (sayiMi(T.sen.satirlar[0].hedef)) uzak.push({ ad: 'Temel kötümser senaryo', fiyat: T.sen.satirlar[0].hedef });
+    if (sayiMi(T.sen.satirlar[2].hedef)) uzak.push({ ad: 'Temel iyimser senaryo', fiyat: T.sen.satirlar[2].hedef });
+  }
+  const sigma30 = f * g.hv20 * Math.sqrt(30 / 365);
+  const plan = { yukari: zPlan(true, f, atr, destek, direnc, sigma30, uzak), asagi: zPlan(false, f, atr, destek, direnc, sigma30, uzak) };
+  const varsayilanYon = ys.skor >= 0 ? 'yukari' : 'asagi';
+
+  $('#z-ust', main).innerHTML = `${T.sorunlar.length ? `<div class="uyari kirmizi-kutu" role="alert"><b>⚠️ Veri tutarsız</b> — ${esc(T.sorunlar.join(' · '))}. Temel hedefleri kullanmayın.</div>` : ''}
+  <div class="kart"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+    <div><h2 style="margin:0;font-size:19px;color:var(--metin)">${esc(t)} · ${tarihTR(bugunStr())}</h2><div class="alt">${esc(pr.name || '')}${pr.finnhubIndustry ? ' · ' + esc(pr.finnhubIndustry) : ''}</div></div>
+    <div class="sag"><div class="buyuk">${usd(T.fiyat ?? f)}</div><div class="alt ${renk(q.dp)}">${sayiMi(q.dp) ? yuzde(q.dp / 100, 2) + ' bugün' : ''}</div></div></div>
+    ${tk ? `<p class="alt" style="margin:8px 0 0">📅 Sıradaki bilanço ${tarihTR(tk.date)} (${kalanGun(tk.date)} gün · ${SAAT[tk.hour] || 'saat belirsiz'})</p>` : ''}</div>`;
+
+  $('#z-temel', main).innerHTML = `<div class="kart"><h2>3. Temel <small>· Borsa Defteri yöntemi</small></h2>
+    <div class="uc"><div><div class="etiket">Bileşik puan</div><div class="sayi"><b>${T.p.bilesik ?? '—'}</b> <span class="alt">${yorum(T.p.bilesik)}</span></div>
+      <div class="alt">${BOYUTLAR.map(b => b[0] + ' ' + (T.p.boyut[b] ?? '—')).join(' · ')}</div></div>
+      <div><div class="etiket">Beklenen değer</div><div class="sayi">${usd(T.sen.beklenen)}</div><div class="alt ${renk(bp)}">${yuzde(bp)}</div></div>
+      <div><div class="etiket">Tutarlılık</div><div class="sayi"><span class="cip ${T.tut.sinif}">${T.tut.seviye}</span></div><div class="alt">DCF ${T.dcf ? usd(T.dcf.hisseBasi) : '—'}</div></div></div>
+    <p style="margin:10px 0 4px">${T.elenen >= 0 ? `<span class="cip kirmizi">⛔ ${T.elenen + 1}. adımda elendi: ${esc(T.akis[T.elenen].ad)}</span>` : `<span class="cip ${T.dikkatSay ? 'sari' : 'yesil'}">${T.dikkatSay ? '⚠️ ' + T.dikkatSay + ' adımda dikkat' : '✅ Eleme akışını geçti'}</span>`}
+      <span class="cip ${T.bayrakSay > 2 ? 'kirmizi' : T.bayrakSay ? 'sari' : 'yesil'}">🚩 ${T.bayrakSay} bayrak</span></p>
+    <ul class="alt" style="margin:4px 0 0;padding-left:18px">${T.akis.filter(x => x.durum === 'elendi' || x.durum === 'dikkat').map(x => `<li>${DURUM[x.durum][0]} <b>${esc(x.ad)}</b>: ${esc(x.deger)}</li>`).join('')}
+      ${sayiMi(T.rd.g) ? `<li>Fiyatlanan FCF büyümesi ${yuzde(T.rd.g)} · baz senaryo ${yuzde(T.sen.g)}</li>` : ''}</ul></div>`;
+
+  $('#z-teknik', main).innerHTML = `<div class="kart"><h2>3. Teknik · 4. Yön</h2>
+    <div class="uc"><div><div class="etiket">SMA20 / 50 / 200</div><div class="sayi">${sayi(g.sma20, 0)} / ${sayi(g.sma50, 0)} / ${sayi(g.sma200, 0)}</div></div>
+      <div><div class="etiket">RSI · ADX</div><div class="sayi">${sayi(g.rsi)} · ${sayi(g.adx)}</div><div class="alt">+DI ${sayi(g.diArti)} / −DI ${sayi(g.diEksi)}</div></div>
+      <div><div class="etiket">ATR · HV20</div><div class="sayi">${sayi(atr, 2)} (%${nf(1).format(atr / f * 100)})</div><div class="alt">HV20 %${nf(0).format(g.hv20 * 100)}</div></div></div>
+    <p style="margin:10px 0 4px"><span class="cip ${ys.skor >= 25 ? 'yesil' : ys.skor <= -25 ? 'kirmizi' : 'sari'}">Teknik: ${teknikYon} (${ys.skor > 0 ? '+' : ''}${ys.skor})</span>
+      <span class="cip">Temel: ${temelIsaret || '—'}</span> <span class="cip ${uyum === 'uyumlu' ? 'yesil' : uyum === 'çelişkili' ? 'kirmizi' : ''}">${uyum}</span></p>
+    <p class="alt" style="margin:0">${esc(ys.nedenler.join(' · '))}</p>
+    <div class="iki" style="margin-top:10px"><div><div class="etiket">Dirençler</div>${direnc.slice(0, 3).map(s => `<div class="alt">${sayi(s.fiyat, 2)} <small>· ${esc(s.tur === 'salınım' ? 'güç ' + s.guc : s.ad)}</small></div>`).join('') || '<div class="alt">—</div>'}</div>
+      <div><div class="etiket">Destekler</div>${destek.slice(0, 3).map(s => `<div class="alt">${sayi(s.fiyat, 2)} <small>· ${esc(s.tur === 'salınım' ? 'güç ' + s.guc : s.ad)}</small></div>`).join('') || '<div class="alt">—</div>'}</div></div>
+    ${test.length ? `<p class="alt" style="margin:6px 0 0">Şu an test edilen: ${test.map(s => esc(s.ad)).join(', ')}</p>` : ''}</div>`;
+
+  const durum = { yon: varsayilanYon, hedef: null, stop: null, ivRank: null, vade: null };
+  const planCiz = () => {
+    const pl = plan[durum.yon === 'asagi' ? 'asagi' : 'yukari'];
+    const yakin = pl.hedefler.filter(h => !h.uzak && !h.olasilik), iyi = yakin.filter(h => h.rr >= 1.5);
+    if (durum.hedef === null) durum.hedef = Math.round((iyi[0] || yakin[yakin.length - 1] || pl.hedefler[0]).fiyat * 100) / 100;
+    if (durum.stop === null) durum.stop = Math.round(pl.stop * 100) / 100;
+    $('#z-plan', main).innerHTML = `<div class="kart"><h2>5. Spot plan <small>· ${pl.alt ? 'Yukarı (alış)' : 'Aşağı (düşüş)'}</small></h2>
+      <div class="uc"><div><div class="etiket">Giriş</div><div class="sayi">${usd(pl.giris)}</div>${sayiMi(pl.altGiris) ? `<div class="alt">alternatif ${usd(pl.altGiris)}</div>` : ''}</div>
+        <div><div class="etiket">Stop</div><div class="sayi">${usd(pl.stop)}</div><div class="alt">risk %${nf(1).format(pl.risk / f * 100)} · ${nf(1).format(pl.risk / atr)} ATR</div></div>
+        <div><div class="etiket">30g 1σ</div><div class="sayi">±${usd(sigma30)}</div><div class="alt">%${nf(1).format(sigma30 / f * 100)} (HV20)</div></div></div>
+      <p class="alt" style="margin:6px 0">Stop: ${esc(pl.stopNeden)}${sayiMi(pl.sikStop) ? ' · sıkı stop ' + usd(pl.sikStop) : ''}</p>
+      <div class="kaydir"><table class="tablo"><thead><tr><th>Hedef</th><th>Fiyat</th><th>%</th><th>R/R</th></tr></thead><tbody>
+        ${pl.hedefler.map(h => `<tr><td>${esc(h.ad)}${h.uzak ? ' <span class="alt">uzak</span>' : ''}</td><td>${usd(h.fiyat)}</td><td class="${renk(h.fiyat - f)}">${yuzde(h.fiyat / f - 1)}</td><td><b>${sayi(h.rr, 2)}</b></td></tr>`).join('')}
+      </tbody></table></div>
+      ${pl.notlar.map(n => `<div class="uyari">⚠️ ${esc(n)}</div>`).join('')}</div>`;
+  };
+  planCiz();
+
+  // 6) Opsiyon
+  const ops = $('#z-ops', main);
+  ops.innerHTML = '<div class="kart yukleniyor">Opsiyon zinciri yükleniyor…</div>';
+  let oz;
+  try {
+    oz = await zincirAl({ islem: 'opsiyon', t }, 5 * 6e4, yenile);
+    const [vade, vu] = zVadeSec(oz.vadeler || [], tk ? tk.date : null);
+    durum.vadeUyari = vu;
+    if (vade && vade !== oz.vade) oz = await zincirAl({ islem: 'opsiyon', t, vade }, 5 * 6e4, yenile);
+  } catch (e) { if (aktif.ad === 'zincir') ops.innerHTML = `<div class="kart"><h2>6. Opsiyon</h2>${hataKutusu(e)}</div>`; return; }
+  if (aktif.ad !== 'zincir' || kod(aktif.param) !== t) return;
+  const opsCiz = () => {
+    const S = sayiMi(oz.spot) ? oz.spot : f, gun = Math.max(kalanGun(oz.vade), 1), Tt = gun / 365, r = sayiMi(gc.irx) ? gc.irx / 100 : 0.045;
+    const yatay = durum.yon === 'yatay';
+    const sonuc = zOpsiyonHesapla(oz, { S, T: Tt, r, yon: durum.yon, hedef: durum.hedef, stop: durum.stop, ivRank: durum.ivRank, hv20: g.hv20,
+      ust: direnc[0] ? direnc[0].fiyat : S * 1.05, alt: destek[0] ? destek[0].fiyat : S * 0.95 });
+    const genel = [...(durum.vadeUyari || [])];
+    if (gun < 21 || gun > 45) genel.push('Vade ' + gun + ' gün: kural 21–45 gün.');
+    if (tk && tk.date >= bugunStr() && tk.date <= oz.vade) genel.push('Vade bilançoyu (' + tarihTR(tk.date) + ') kapsıyor: IV düşüşü riski.');
+    if (sayiMi(gc.vix) && (gc.vix > 35 || gc.vix < 12)) genel.push('VIX ' + sayi(gc.vix) + ': 12–35 dışında → yeni kısa prim (kredi) pozisyonu açılmaz.');
+    if (sonuc.canliYok) genel.push('Canlı alış/satış yok (piyasa kapalı): son işlem fiyatları kullanıldı.');
+    const tl = v => v === null ? 'sınırsız' : usdIsaretli(v);
+    ops.innerHTML = `<div class="kart"><h2>6. Opsiyon alternatifleri</h2>
+      <div class="iki"><label>Yön<select id="zo-yon"><option value="yukari"${durum.yon === 'yukari' ? ' selected' : ''}>Yukarı</option><option value="asagi"${durum.yon === 'asagi' ? ' selected' : ''}>Aşağı</option><option value="yatay"${yatay ? ' selected' : ''}>Yatay (kondor)</option></select></label>
+        <label>Vade<select id="zo-vade">${(oz.vadeler || []).filter(v => kalanGun(v) >= 0).slice(0, 16).map(v => `<option value="${v}"${v === oz.vade ? ' selected' : ''}>${tarihTR(v)} · ${kalanGun(v)} g</option>`).join('')}</select></label></div>
+      <div class="uc"><label>Hedef ($)<input type="number" id="zo-hedef" value="${durum.hedef}" step="any" inputmode="decimal"${yatay ? ' disabled' : ''}></label>
+        <label>Stop ($)<input type="number" id="zo-stop" value="${durum.stop}" step="any" inputmode="decimal"${yatay ? ' disabled' : ''}></label>
+        <label>IV rank<input type="number" id="zo-ivr" value="${durum.ivRank ?? ''}" placeholder="boş" min="0" max="100" inputmode="numeric"></label></div>
+      <p style="margin:6px 0"><span class="cip ${sonuc.ivd === 'pahalı' ? 'kirmizi' : sonuc.ivd === 'ucuz' ? 'yesil' : ''}">Opsiyonlar ${sonuc.ivd}</span>
+        <span class="cip">Boyut ×${nf(1).format(sonuc.boyut)}</span> <span class="cip">ATM IV %${nf(0).format(sonuc.sigma * 100)}</span>
+        ${sayiMi(gc.vix) ? `<span class="cip">VIX ${sayi(gc.vix)}</span>` : ''}</p>
+      <p class="alt" style="margin:0">${esc(sonuc.olcut)} · spot ${usd(S)} · ${oz.kaynak}${sonuc.straddle ? ' · vade beklenen hareketi ±' + usd(sonuc.straddle) + ' (%' + nf(1).format(sonuc.straddle / S * 100) + ')' : ''}</p>
+      ${genel.map(u => `<div class="uyari">⚠️ ${esc(u)}</div>`).join('')}
+      ${sonuc.yapilar.length ? '' : '<p class="alt">Uygun yapı bulunamadı.</p>'}</div>
+      ${sonuc.yapilar.map(y => `<div class="kart"><h2 style="font-size:15px">${esc(y.ad)}</h2>
+        <div class="kaydir"><table class="tablo"><thead><tr><th></th><th>Strike</th><th>Orta</th><th>Delta</th><th>OI</th></tr></thead><tbody>
+          ${y.bacaklar.map(b => `<tr><td>${b.islem === 'al' ? 'Al' : 'Sat'} ${b.tip}</td><td>${b.k}</td><td>${usd(b.orta)}${b.canli ? '' : '*'}</td><td>${sayiMi(b.delta) ? nf(2).format(b.delta) : '—'}</td><td>${b.oi}</td></tr>`).join('')}
+        </tbody></table></div>
+        <div class="uc" style="margin-top:8px"><div><div class="etiket">${y.kredi ? 'Alınan' : 'Ödenen'}</div><div class="sayi">${usd(Math.abs(y.net), 0)}</div></div>
+          <div><div class="etiket">Maks kâr / zarar</div><div class="sayi">${tl(y.maksKar)} / ${usdIsaretli(y.maksZarar)}</div></div>
+          <div><div class="etiket">Başa baş</div><div class="sayi">${y.bb.map(v => sayi(v, 2)).join(' · ') || '—'}</div></div></div>
+        <div class="uc"><div><div class="etiket">Hedefte</div><div class="sayi ${renk(y.hedefKz)}">${usdIsaretli(y.hedefKz)}</div></div>
+          <div><div class="etiket">Stopta</div><div class="sayi ${renk(y.stopKz)}">${usdIsaretli(y.stopKz)}</div></div>
+          <div><div class="etiket">Kâr olasılığı · R/R</div><div class="sayi">%${Math.round(y.pop * 100)} · ${sayi(y.rr, 2)}</div></div></div>
+        ${sayiMi(y.geriAlim) ? `<p class="alt" style="margin:4px 0 0">Kâr al: GTC geri alım ${usd(y.geriAlim)} (primin %50'si)</p>` : ''}
+        ${y.uyarilar.map(u => `<div class="uyari">⚠️ ${esc(u)}</div>`).join('')}</div>`).join('')}
+      <div class="kart"><p class="alt" style="margin:0">K/Z kontrat başına (100 hisse) ve <b>vadedeki</b> değerdir; stop vadeden önce gelirse sonuç farklı olur. * = canlı fiyat yok, son işlem. Kurallar (KARARLAR 06) uyarıdır, eleme değil: vadeye 7 gün kala kapat; kredi yapılarında %50 kâr al. Delta Black-Scholes (Yahoo IV, faiz ^IRX). Kendi yöntemimiz; <b>yatırım tavsiyesi değildir</b>.</p></div>`;
+    $('#zo-yon', ops).onchange = e => { durum.yon = e.target.value; durum.hedef = null; durum.stop = null; planCiz(); opsCiz(); };
+    $('#zo-hedef', ops).onchange = e => { const v = Number(e.target.value); if (v > 0) { durum.hedef = v; opsCiz(); } };
+    $('#zo-stop', ops).onchange = e => { const v = Number(e.target.value); if (v > 0) { durum.stop = v; opsCiz(); } };
+    $('#zo-ivr', ops).onchange = e => { const v = e.target.value === '' ? null : Number(e.target.value); durum.ivRank = sayiMi(v) ? v : null; opsCiz(); };
+    $('#zo-vade', ops).onchange = async e => {
+      ops.querySelector('.kart').classList.add('yukleniyor');
+      try { oz = await zincirAl({ islem: 'opsiyon', t, vade: e.target.value }); durum.vadeUyari = []; opsCiz(); } catch (err) { bildir(err.message); opsCiz(); }
+    };
+  };
+  opsCiz();
 }
 
 // ---------------------------------------------------------------- INSIDER
@@ -879,7 +1244,6 @@ function ekranAyarlar(main) {
       <label>Baz<input type="number" name="sBaz" value="${a.senAgirlik.baz}" min="0" max="100" step="1" inputmode="numeric"></label>
       <label>İyimser<input type="number" name="sIyi" value="${a.senAgirlik.iyi}" min="0" max="100" step="1" inputmode="numeric"></label>
     </div>
-    <label>Takvimde vurgulanacak gün sayısı<input type="number" name="hatirlatGun" value="${a.hatirlatGun}" min="1" max="60" step="1" inputmode="numeric"></label>
     <label>Tema<select name="tema"><option value="auto"${a.tema === 'auto' ? ' selected' : ''}>Cihaza göre</option><option value="light"${a.tema === 'light' ? ' selected' : ''}>Açık</option><option value="dark"${a.tema === 'dark' ? ' selected' : ''}>Koyu</option></select></label>
     <div class="dugmeler"><button class="dugme" type="submit">Kaydet</button><button class="dugme ikincil" type="button" id="sifirla">Varsayılana dön</button></div>
   </form>
@@ -920,7 +1284,7 @@ function ekranAyarlar(main) {
     if (!Object.values(ag).some(v => v > 0)) { bildir('En az bir ağırlık 0\'dan büyük olmalı.'); return; }
     const sen = { kot: Number(f.sKot.value), baz: Number(f.sBaz.value), iyi: Number(f.sIyi.value) };
     if (!Object.values(sen).every(v => v >= 0) || !Object.values(sen).some(v => v > 0)) { bildir('Senaryo ağırlıkları geçersiz.'); return; }
-    ayarKaydet({ agirlik: ag, senAgirlik: sen, hatirlatGun: Math.max(1, Number(f.hatirlatGun.value) || 7), tema: f.tema.value }); temaUygula(); bildir('Kaydedildi.');
+    ayarKaydet({ agirlik: ag, senAgirlik: sen, tema: f.tema.value }); temaUygula(); bildir('Kaydedildi.');
   };
   $('#sifirla', main).onclick = () => { ayarKaydet({ agirlik: { ...VARSAYILAN_AYAR.agirlik }, senAgirlik: { ...VARSAYILAN_AYAR.senAgirlik }, hatirlatGun: 7, tema: 'auto' }); temaUygula(); yonlendir(); bildir('Varsayılanlar yüklendi.'); };
   $('#disa', main).onclick = () => {
