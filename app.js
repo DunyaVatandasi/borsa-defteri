@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 10, tarih: '28.11.2026' };
+const UYGULAMA_SURUM = { no: 11, tarih: '28.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -1226,10 +1226,14 @@ async function zincirHisse(main, t, yenile) {
 const insSekme = secili => `<div class="kart" style="display:flex;gap:8px;padding:10px 12px">
   <a class="cip${secili === 'piyasa' ? ' yesil' : ''}" href="#insider">Tüm piyasa</a><a class="cip${secili === 'portfoy' ? ' yesil' : ''}" href="#insider/portfoy">Portföyüm</a></div>`;
 
-/** Finnhub sembolsüz uç nokta: tüm şirketlerin en son ~2000 bildirimi (yaklaşık son 3–5 iş günü). Yalnız SEC Form 4, kod P/S. */
-function insiderPiyasa(r) {
-  const gorulen = new Set(), grup = new Map();
-  let ilkT = '', sonT = '';
+/** Ana kaynak: OpenInsider (Apps Script aracısı, son 30 gün; alım ≥ 50 bin $, satış ≥ 1 mn $). Satır → ortak kayıt. */
+function insiderOpenInsider(v) {
+  return (v.satirlar || []).map(([bildirim, tarih, t, sirket, kisi, unvan, kod, fiyat, adet, dSahip, tutar]) =>
+    ({ t, sirket, kisi, unvan, tarih: tarih || bildirim, kod, fiyat, adet, dSahip, tutar }));
+}
+/** Yedek kaynak: Finnhub sembolsüz uç nokta (en son ~2000 bildirim ≈ son 3–5 iş günü). Yalnız SEC Form 4, kod P/S. */
+function insiderFinnhub(r) {
+  const gorulen = new Set(), out = [];
   ((r && r.data) || []).forEach(x => {
     if (x.source && x.source !== 'sec') return;
     if (x.isDerivative || !x.symbol || (x.transactionCode !== 'P' && x.transactionCode !== 'S')) return;
@@ -1238,13 +1242,24 @@ function insiderPiyasa(r) {
     const tarih = x.transactionDate || x.filingDate || '';
     const anahtar = [x.symbol, x.name, tarih, x.change, fiyat, x.transactionCode].join('|');
     if (gorulen.has(anahtar)) return; gorulen.add(anahtar);
-    if (!ilkT || tarih < ilkT) ilkT = tarih; if (tarih > sonT) sonT = tarih;
-    const k = x.symbol + '|' + x.transactionCode;
-    const g = grup.get(k) || { t: x.symbol, kod: x.transactionCode, kisiler: new Set(), islem: 0, usd: 0, adet: 0, son: '' };
-    g.kisiler.add(x.name); g.islem++; g.usd += adet * fiyat; g.adet += adet; if (tarih > g.son) g.son = tarih;
+    out.push({ t: x.symbol, sirket: '', kisi: x.name, unvan: '', tarih, kod: x.transactionCode, fiyat, adet, dSahip: '', tutar: adet * fiyat });
+  });
+  return out;
+}
+/** Hisse + işlem türüne göre gruplar; yalnız `gun` gün içindeki işlemler. */
+function insiderGrupla(kayitlar, gun) {
+  const sinir = gunEkle(bugunStr(), -gun), grup = new Map();
+  let ilkT = '', sonT = '';
+  kayitlar.forEach(x => {
+    if (x.tarih < sinir) return;
+    if (!ilkT || x.tarih < ilkT) ilkT = x.tarih; if (x.tarih > sonT) sonT = x.tarih;
+    const k = x.t + '|' + x.kod;
+    const g = grup.get(k) || { t: x.t, sirket: x.sirket, kod: x.kod, kisiler: new Map(), islem: 0, usd: 0, adet: 0, son: '' };
+    if (!g.kisiler.has(x.kisi)) g.kisiler.set(x.kisi, x.unvan);
+    g.islem++; g.usd += x.tutar; g.adet += x.adet; if (x.tarih > g.son) g.son = x.tarih;
     grup.set(k, g);
   });
-  return { ilkT, sonT, gruplar: [...grup.values()].map(g => ({ ...g, kisiSay: g.kisiler.size, kisiler: [...g.kisiler], ort: g.usd / g.adet })) };
+  return { ilkT, sonT, gruplar: [...grup.values()].map(g => ({ ...g, kisiSay: g.kisiler.size, kisiler: [...g.kisiler].map(([ad, u]) => u ? ad + ' (' + u + ')' : ad), ort: g.adet ? g.usd / g.adet : null })) };
 }
 
 async function ekranInsider(main, param, yenile) {
@@ -1271,31 +1286,48 @@ async function ekranInsider(main, param, yenile) {
 
 async function ekranInsiderPiyasa(main, yenile) {
   if (!veriVarMi()) return anahtarYok(main);
-  const f = { tur: 'P', min: 100000, ...depo.al('insFiltre', {}) };
+  const f = { tur: 'P', min: 100000, gun: 30, ...depo.al('insFiltre', {}) };
+  if (![0, 100000, 1000000, 10000000].includes(f.min)) f.min = 100000;
+  if (![7, 14, 30].includes(f.gun)) f.gun = 30;
+  const sec = (id, liste, deger) => `<select id="${id}">${liste.map(([v, a]) => `<option value="${v}"${deger === v ? ' selected' : ''}>${a}</option>`).join('')}</select>`;
   main.innerHTML = `${insSekme('piyasa')}
-  <div class="kart"><h2>🧑‍💼 Tüm piyasa insider <small>· açık piyasa, son bildirimler</small></h2>
-    <div class="iki"><label>İşlem<select id="ins-tur"><option value="P"${f.tur === 'P' ? ' selected' : ''}>Alımlar</option><option value="S"${f.tur === 'S' ? ' selected' : ''}>Satışlar</option><option value="H"${f.tur === 'H' ? ' selected' : ''}>Hepsi</option></select></label>
-      <label>En az tutar<select id="ins-min">${[[0, 'Hepsi'], [25000, '25 bin $'], [100000, '100 bin $'], [1000000, '1 mn $'], [10000000, '10 mn $']].map(([v, a]) => `<option value="${v}"${f.min === v ? ' selected' : ''}>${a}</option>`).join('')}</select></label></div>
-    <div id="ins" class="yukleniyor">Yükleniyor…</div>
-    <p class="alt" style="margin:10px 0 0">Kaynak: Finnhub, SEC Form 4 (yalnız kod P = açık piyasa alımı, S = satış; ödül, opsiyon kullanımı, vergi stopajı hariç). Finnhub en son ~2000 bildirimi verir; bu yaklaşık son 3–5 iş günüdür. Form 4 işlemden sonra ~2 iş günü içinde yayınlanır. Küme alımı = aynı hissede 2+ farklı kişinin alımı. Kendi yöntemimiz; yatırım tavsiyesi değildir.</p></div>`;
+  <div class="kart"><h2>🧑‍💼 Tüm piyasa insider <small>· açık piyasa</small></h2>
+    <div class="uc"><label>İşlem${sec('ins-tur', [['P', 'Alımlar'], ['S', 'Satışlar'], ['H', 'Hepsi']], f.tur)}</label>
+      <label>Dönem${sec('ins-gun', [[7, '7 gün'], [14, '14 gün'], [30, '30 gün']], f.gun)}</label>
+      <label>En az tutar${sec('ins-min', [[0, 'Hepsi'], [100000, '100 bin $'], [1000000, '1 mn $'], [10000000, '10 mn $']], f.min)}</label></div>
+    <div id="ins" class="yukleniyor">Yükleniyor… (ilk açılış birkaç saniye sürer)</div>
+    <p class="alt" id="ins-kaynak" style="margin:10px 0 0"></p></div>`;
   const kutu = $('#ins', main);
   const yenidenCiz = () => { depo.koy('insFiltre', f); ciz(); };
   $('#ins-tur', main).onchange = e => { f.tur = e.target.value; yenidenCiz(); };
+  $('#ins-gun', main).onchange = e => { f.gun = Number(e.target.value); yenidenCiz(); };
   $('#ins-min', main).onchange = e => { f.min = Number(e.target.value); yenidenCiz(); };
-  let veri;
-  try { veri = insiderPiyasa(await fh('/stock/insider-transactions', {}, 30 * 6e4, yenile)); }
-  catch (e) { if (aktif.ad === 'insider') kutu.outerHTML = hataKutusu(e); return; }
+  let kayitlar, kaynakNot, yedek = false;
+  const ortak = ' Yalnız SEC Form 4 kodu P (açık piyasa alımı) ve S (satış); ödül, opsiyon kullanımı ve vergi stopajı hariç. Form 4 işlemden ~2 iş günü sonra yayınlanır. Küme alımı = aynı hissede 2+ farklı kişinin alımı. Tarih = işlem tarihi. Kendi yöntemimiz; yatırım tavsiyesi değildir.';
+  try {
+    if (ayarlar().demo) throw new Error('örnek veri');
+    const v = await zincirAl({ islem: 'insider' }, 30 * 6e4, yenile);
+    kayitlar = insiderOpenInsider(v);
+    kaynakNot = 'Kaynak: OpenInsider (SEC Form 4), son 30 gün. Kapsam: alımlar ≥ 50 bin $, satışlar ≥ 1 mn $ (daha küçük işlemler listede yok).' + ortak;
+  } catch (e) {
+    try { kayitlar = insiderFinnhub(await fh('/stock/insider-transactions', {}, 30 * 6e4, yenile)); yedek = !ayarlar().demo; }
+    catch (e2) { if (aktif.ad === 'insider') kutu.outerHTML = hataKutusu(e2); return; }
+    kaynakNot = 'Kaynak: Finnhub (yedek), en son ~2000 bildirim ≈ son 3–5 iş günü.' + ortak;
+  }
   if (aktif.ad !== 'insider') return;
+  $('#ins-kaynak', main).textContent = kaynakNot;
   const portfoyde = new Set(portfoySorgulari().map(h => h.t));
   function ciz() {
+    const veri = insiderGrupla(kayitlar, f.gun);
     const g = veri.gruplar.filter(x => (f.tur === 'H' || x.kod === f.tur) && x.usd >= f.min)
       .sort((a, b) => (b.kod === 'P' && b.kisiSay >= 2) - (a.kod === 'P' && a.kisiSay >= 2) || b.usd - a.usd);
     const alimSay = veri.gruplar.filter(x => x.kod === 'P').length, satisSay = veri.gruplar.filter(x => x.kod === 'S').length;
     kutu.className = '';
-    kutu.innerHTML = `<p class="alt" style="margin:8px 0">${veri.ilkT ? tarihTR(veri.ilkT) + ' – ' + tarihTR(veri.sonT) : '—'} · ${alimSay} hissede alım, ${satisSay} hissede satış · gösterilen ${g.length}</p>
+    kutu.innerHTML = `${yedek ? '<div class="uyari">⚠️ OpenInsider\'a ulaşılamadı; Finnhub\'ın son birkaç günlük verisi gösteriliyor.</div>' : ''}<p class="alt" style="margin:8px 0">${veri.ilkT ? tarihTR(veri.ilkT) + ' – ' + tarihTR(veri.sonT) : '—'} · ${alimSay} hissede alım, ${satisSay} hissede satış · gösterilen ${g.length}</p>
       ${g.length ? `<ul class="liste">${g.slice(0, 150).map(x => `
       <li class="satir" onclick="location.hash='analiz/${encodeURIComponent(x.t)}'">
         <div class="sol"><div class="kod">${esc(x.t)} <span class="cip ${x.kod === 'P' ? 'yesil' : 'kirmizi'}">${x.kod === 'P' ? 'Alım' : 'Satış'}</span>${portfoyde.has(x.t) ? ' <span class="cip sari">portföyde</span>' : ''}</div>
+          ${x.sirket ? `<div class="alt">${esc(x.sirket)}</div>` : ''}
           <div class="alt">${esc(x.kisiler.slice(0, 2).join(', '))}${x.kisiSay > 2 ? ' +' + (x.kisiSay - 2) : ''}</div>
           <div class="alt">${x.islem} işlem · ort. ${usd(x.ort)} · son ${tarihTR(x.son)}</div>
           ${x.kod === 'P' && x.kisiSay >= 2 ? `<div style="margin-top:4px"><span class="cip yesil">✅ Küme alımı · ${x.kisiSay} kişi</span></div>` : ''}</div>
