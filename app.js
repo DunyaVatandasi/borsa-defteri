@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 11, tarih: '28.11.2026' };
+const UYGULAMA_SURUM = { no: 12, tarih: '28.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -1362,7 +1362,7 @@ async function ekranOrb(main) {
   if (aktif.ad !== 'orb') return;
   const el = $('#orb', main); el.className = '';
   const s = v && v.son;
-  if (!s) { el.innerHTML = '<p class="alt">Henüz tarama gelmedi. Bilgisayardaki tarama, ABD seansında (TSİ 17:45–24:00 civarı) 15 dakikada bir sonuç gönderir.</p>'; return; }
+  if (!s) { el.innerHTML = '<p class="alt">Henüz tarama gelmedi. Bilgisayardaki tarama, ABD açılışından sonraki ilk 1,5 saatte (09:30–11:00 ET; TSİ 17:30–19:00, ABD yaz saatinde 16:30–18:00) 15 dakikada bir sonuç gönderir.</p>'; return; }
 
   const gecmis = Array.isArray(v.gecmis) ? v.gecmis : [];
   const bugun = String(s.zaman).slice(0, 10);
@@ -1382,7 +1382,7 @@ async function ekranOrb(main) {
   const bugunku = gecmis.filter(g => String(g.zaman).startsWith(bugun)).reverse();
   el.innerHTML = `
     <p style="margin:0"><b>${etTarih(s.zaman)} ET</b> <span class="alt">· ${onceSure(s.alindi)}</span></p>
-    ${eski ? '<div class="uyari" style="margin-top:8px">⚠️ Son tarama 40 dakikadan eski. Seans kapalı olabilir ya da bilgisayar kapalı.</div>' : ''}
+    ${eski ? '<div class="uyari" style="margin-top:8px">ℹ️ Son tarama 40 dakikadan eski. Tarama yalnız açılıştan sonraki ilk 1,5 saatte yapılır (TSİ 17:30–19:00, ABD yaz saatinde 16:30–18:00; ilk sonuç ~18:01 / 17:01). Bu saatler dışında, hafta sonu, tatilde ya da bilgisayar kapalıyken yeni tarama gelmez.</div>' : ''}
     <p style="margin:8px 0 0"><span class="cip yesil">⬆️ Yukarı ${yuk.length}</span> <span class="cip kirmizi">⬇️ Aşağı ${asa.length}</span>
       <span class="cip">Veri ${s.veriGelen}/${s.toplam}</span></p>
     ${liste(yuk, '⬆️ Yukarı kırılım')}
@@ -1394,7 +1394,7 @@ async function ekranOrb(main) {
       <li class="satir" style="cursor:default"><div class="sol"><div class="kod">${esc(String(g.zaman).slice(11))} ET</div>
         <div class="alt">${esc([...(g.yukari || []).slice(0, 8)].join(' '))}${(g.yukari || []).length > 8 ? ' …' : ''}</div></div>
         <div class="sag"><span class="cip yesil">⬆️ ${(g.yukari || []).length}</span> <span class="cip kirmizi">⬇️ ${(g.asagi || []).length}</span></div></li>`).join('')}</ul></div>` : ''}
-    <div class="kart"><p class="alt" style="margin:0">Açılış aralığı (OR) = 09:30–09:45 ET'nin en yüksek/en düşük fiyatı. Kırılım: son kapanmış 5 dk mum OR'un üstünde (yukarı) ya da altında (aşağı) kapandı. Fark % = son fiyatın OR sınırına uzaklığı. Hacim oranı = son 3 mumun ortalama hacmi / OR mumlarının ortalaması. "Yeni" = bir önceki taramada yoktu. S&P 500'ün en büyük ~100 hissesi; veri Yahoo Finance, 15 dakikada bir bilgisayardan gönderilir. Kendi yöntemimiz; <b>yatırım tavsiyesi değildir</b>.</p></div>`);
+    <div class="kart"><p class="alt" style="margin:0">Açılış aralığı (OR) = 09:30–09:45 ET'nin en yüksek/en düşük fiyatı. Kırılım: son kapanmış 5 dk mum OR'un üstünde (yukarı) ya da altında (aşağı) kapandı. Fark % = son fiyatın OR sınırına uzaklığı. Hacim oranı = son 3 mumun ortalama hacmi / OR mumlarının ortalaması. "Yeni" = bir önceki taramada yoktu. S&P 500'ün en büyük ~100 hissesi; veri Yahoo Finance, açılıştan sonraki ilk 1,5 saat boyunca (09:30–11:00 ET) 15 dakikada bir bilgisayardan gönderilir. Kendi yöntemimiz; <b>yatırım tavsiyesi değildir</b>.</p></div>`);
 }
 
 // ---------------------------------------------------------------- AYARLAR
