@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 8, tarih: '27.11.2026' };
+const UYGULAMA_SURUM = { no: 9, tarih: '28.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -939,6 +939,72 @@ function zOpsiyonHesapla(oz, c) {
   return { sigma, straddle, ivd, olcut, boyut: { ucuz: 0.5, normal: 1, pahalı: 0.6 }[ivd], yapilar, canliYok: !z.call.some(x => x.canli) };
 }
 
+// --- GEX / VEX (araclar/hisse_akisi/gex.py ile AYNI; birinde kural değişirse diğerini de güncelleyin)
+// Varsayım: piyasa yapıcı call'da alıcı (+), put'ta satıcı (−). Vadeler 0–45 gün (NY tarihi), strike spot ±%25.
+function zGexBacaklar(gx, S, r) {
+  const out = [];
+  for (const v of gx.vadeler || []) {
+    const gun = Math.round((Date.parse(v.vade + 'T00:00:00Z') - Date.parse(gx.bugun + 'T00:00:00Z')) / 864e5);
+    if (gun < 0 || gun > 45) continue;
+    const T = Math.max(gun, 1) / 365;
+    for (const tip of ['call', 'put']) for (const [k, b, a, s, ivh, oi] of v[tip] || []) {
+      if (!(oi > 0) || k < S * 0.75 || k > S * 1.25) continue;
+      const orta = b > 0 && a > 0 ? (b + a) / 2 : s;
+      const iv = ivh > 0.01 ? ivh : zIv(orta, S, k, T, r, tip);
+      if (!iv || iv >= 4.99) continue;
+      out.push({ k, tip, oi, iv, T, isaret: tip === 'call' ? 1 : -1 });
+    }
+  }
+  return out;
+}
+function zMaruziyet(b, P, r) {
+  const sq = b.iv * Math.sqrt(b.T), d1 = (Math.log(P / b.k) + (r + b.iv * b.iv / 2) * b.T) / sq, d2 = d1 - sq;
+  const phi = Math.exp(-d1 * d1 / 2) / Math.sqrt(2 * Math.PI), n = b.isaret * b.oi * 100;
+  return [n * phi / (P * sq) * P * P * 0.01, n * (-phi * d2 / b.iv) * P * 0.01];
+}
+function zGex(gx, S, r) {
+  const bac = zGexBacaklar(gx, S, r);
+  if (!bac.length) return { veriYok: true };
+  const st = new Map(); let tg = 0, tv = 0;
+  for (const b of bac) {
+    const [g, v] = zMaruziyet(b, S, r); tg += g; tv += v;
+    const s = st.get(b.k) || { k: b.k, call: 0, put: 0, net: 0 }; s[b.tip] += g; s.net += g; st.set(b.k, s);
+  }
+  const izgara = Array.from({ length: 81 }, (_, i) => S * (0.80 + 0.005 * i));
+  const egri = izgara.map(P => bac.reduce((t, b) => t + zMaruziyet(b, P, r)[0], 0));
+  let flip = null, eniyi = null;
+  for (let i = 0; i < izgara.length - 1; i++) if (egri[i] === 0 || egri[i] * egri[i + 1] < 0) {
+    const x = egri[i + 1] !== egri[i] ? izgara[i] + (izgara[i + 1] - izgara[i]) * (-egri[i]) / (egri[i + 1] - egri[i]) : izgara[i];
+    if (eniyi === null || Math.abs(x - S) < eniyi) { flip = x; eniyi = Math.abs(x - S); }
+  }
+  const sl = [...st.values()], ust = sl.filter(s => s.k >= S), alt = sl.filter(s => s.k <= S);
+  const callD = (ust.length ? ust : sl).reduce((a, b) => b.call > a.call ? b : a), putD = (alt.length ? alt : sl).reduce((a, b) => b.put < a.put ? b : a);
+  const toplamOi = bac.reduce((t, b) => t + b.oi, 0), rejim = tg > 0 ? 'artı' : 'eksi';
+  return { spot: S, vadeSay: (gx.vadeler || []).length, bacakSay: bac.length, toplamOi, veriZayif: toplamOi < 10000 || bac.length < 20,
+    gex: tg, vex: tv, rejim, flip, callDuvar: callD.k, putDuvar: putD.k,
+    enGuclu: sl.sort((a, b) => Math.abs(b.net) - Math.abs(a.net)).slice(0, 5),
+    rejimYorum: rejim === 'artı' ? 'Artı gamma: piyasa yapıcı düşüşte alır, yükselişte satar; fiyat sakinleşmeye ve duvarlar arasında kalmaya eğilimli.'
+      : 'Eksi gamma: piyasa yapıcı düşüşte satar, yükselişte alır; hareketler hızlanabilir, trend sertleşebilir.',
+    vannaYorum: tv > 0 ? 'VEX artı: IV düşerse (ör. bilanço sonrası) piyasa yapıcı alımı beklenir (destek); IV yükselirse satış baskısı.'
+      : 'VEX eksi: IV düşerse piyasa yapıcı satışı beklenir; IV yükselirse alım.',
+    opsiyonNotu: rejim === 'artı' ? 'Artı gamma: fiyat sıkışmaya eğilimli; kredi yapıları ve demir kondor bu ortama daha uygun.'
+      : 'Eksi gamma: sert hareket olasılığı yüksek; uzun opsiyon ve borçlu spread\'ler bu ortama daha uygun, kredi yapılarında dikkat.' };
+}
+function zGexUyarilar(x, yukari, f, hedef, stop) {
+  if (!x || x.veriYok) return [];
+  const u = [], s2 = v => sayi(v, 2);
+  if (yukari && sayiMi(hedef) && hedef > x.callDuvar) u.push(`Hedef (${s2(hedef)}) call duvarının (${s2(x.callDuvar)}) ötesinde: duvar direnç gibi çalışabilir.`);
+  if (!yukari && sayiMi(hedef) && hedef < x.putDuvar) u.push(`Hedef (${s2(hedef)}) put duvarının (${s2(x.putDuvar)}) ötesinde: duvar destek gibi çalışabilir.`);
+  if (sayiMi(x.flip) && sayiMi(stop)) {
+    if (yukari && stop < x.flip && x.flip < f) u.push(`Fiyat stopa giderken sıfır gamma seviyesinin (${s2(x.flip)}) altına iner: düşüş hızlanabilir, stop kayabilir.`);
+    if (!yukari && f < x.flip && x.flip < stop) u.push(`Fiyat stopa giderken sıfır gamma seviyesinin (${s2(x.flip)}) üstüne çıkar: yükseliş hızlanabilir, stop kayabilir.`);
+  }
+  if (sayiMi(x.flip) && x.rejim === 'eksi' && f < x.flip) u.push(`Fiyat sıfır gamma seviyesinin (${s2(x.flip)}) altında: eksi gamma bölgesi.`);
+  if (x.veriZayif) u.push('Opsiyon verisi zayıf (açık pozisyon az): GEX/VEX güvenilir değil.');
+  return u;
+}
+const zMilyon = v => (v < 0 ? '−' : '+') + '$' + nf(Math.abs(v) >= 1e9 ? 2 : 0).format(Math.abs(v) >= 1e9 ? Math.abs(v) / 1e9 : Math.abs(v) / 1e6) + (Math.abs(v) >= 1e9 ? ' mr' : ' mn');
+
 // --- ekranlar
 function ekranZincir(main, param, yenile) {
   const t = kod(param);
@@ -990,7 +1056,7 @@ async function zincirHisse(main, t, yenile) {
   main.innerHTML = `<div class="kart" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <a href="#zincir">← Tarama</a><a href="#analiz/${encodeURIComponent(t)}">Tam analiz →</a></div>
     <div id="z-ust"><div class="kart yukleniyor">${esc(t)} yükleniyor… (Finnhub + fiyat geçmişi)</div></div>
-    <div id="z-temel"></div><div id="z-teknik"></div><div id="z-plan"></div><div id="z-ops"></div>`;
+    <div id="z-temel"></div><div id="z-teknik"></div><div id="z-gex"></div><div id="z-plan"></div><div id="z-ops"></div>`;
   if (!veriVarMi()) return anahtarYok($('#z-ust', main));
   if (ayarlar().demo) { $('#z-ust', main).innerHTML = '<div class="uyari">Zincir örnek veri modunda çalışmaz; Ayarlar\'dan Finnhub anahtarını gir.</div>'; return; }
   let m, q, pr, kz, tk, gc;
@@ -1068,9 +1134,33 @@ async function zincirHisse(main, t, yenile) {
       <div class="kaydir"><table class="tablo"><thead><tr><th>Hedef</th><th>Fiyat</th><th>%</th><th>R/R</th></tr></thead><tbody>
         ${pl.hedefler.map(h => `<tr><td>${esc(h.ad)}${h.uzak ? ' <span class="alt">uzak</span>' : ''}</td><td>${usd(h.fiyat)}</td><td class="${renk(h.fiyat - f)}">${yuzde(h.fiyat / f - 1)}</td><td><b>${sayi(h.rr, 2)}</b></td></tr>`).join('')}
       </tbody></table></div>
-      ${pl.notlar.map(n => `<div class="uyari">⚠️ ${esc(n)}</div>`).join('')}</div>`;
+      ${pl.notlar.map(n => `<div class="uyari">⚠️ ${esc(n)}</div>`).join('')}
+      ${zGexUyarilar(durum.gex, pl.alt, f, durum.hedef, durum.stop).map(n => `<div class="uyari">🧲 GEX: ${esc(n)}</div>`).join('')}</div>`;
   };
   planCiz();
+
+  // 4b) Opsiyon pozisyonlanması (GEX/VEX) — arka planda; gelince plan ve opsiyon kartı yenilenir
+  let opsCiz = null;
+  const gexEl = $('#z-gex', main);
+  gexEl.innerHTML = '<div class="kart yukleniyor">GEX/VEX hesaplanıyor… (45 güne kadar tüm vadeler)</div>';
+  zincirAl({ islem: 'gex', t }, 15 * 6e4, yenile).then(gx => {
+    if (aktif.ad !== 'zincir' || kod(aktif.param) !== t) return;
+    const r = sayiMi(gc.irx) ? gc.irx / 100 : 0.045, x = zGex(gx, f, r);
+    durum.gex = x;
+    if (x.veriYok) { gexEl.innerHTML = '<div class="kart"><h2>4b. Opsiyon pozisyonlanması</h2><p class="alt">45 gün içinde hesaplanabilir opsiyon verisi yok.</p></div>'; return; }
+    gexEl.innerHTML = `<div class="kart"><h2>4b. Opsiyon pozisyonlanması <small>· GEX / VEX</small></h2>
+      <p style="margin:0 0 6px"><span class="cip ${x.rejim === 'artı' ? 'yesil' : 'kirmizi'}">${x.rejim === 'artı' ? 'Artı' : 'Eksi'} gamma</span>
+        <span class="cip">VEX ${x.vex > 0 ? 'artı' : 'eksi'}</span>${x.veriZayif ? ' <span class="cip sari">⚠️ veri zayıf</span>' : ''}</p>
+      <div class="uc"><div><div class="etiket">Toplam GEX</div><div class="sayi">${zMilyon(x.gex)}</div><div class="alt">%1 harekette hedge</div></div>
+        <div><div class="etiket">Toplam VEX</div><div class="sayi">${zMilyon(x.vex)}</div><div class="alt">IV +1 puanda delta</div></div>
+        <div><div class="etiket">Sıfır gamma</div><div class="sayi">${sayiMi(x.flip) ? usd(x.flip) : '—'}</div><div class="alt">${sayiMi(x.flip) ? yuzde(x.flip / f - 1) + ' uzakta' : '±%20 içinde yok'}</div></div></div>
+      <div class="iki" style="margin-top:8px"><div><div class="etiket">Call duvarı (direnç)</div><div class="sayi">${usd(x.callDuvar)}</div></div>
+        <div><div class="etiket">Put duvarı (destek)</div><div class="sayi">${usd(x.putDuvar)}</div></div></div>
+      <p class="alt" style="margin:8px 0 2px">${esc(x.rejimYorum)}</p><p class="alt" style="margin:0 0 4px">${esc(x.vannaYorum)}</p>
+      <p class="alt" style="margin:0">En yoğun strike'lar: ${x.enGuclu.map(s => `${String(s.k).replace('.', ',')} (${zMilyon(s.net)})`).join(' · ')}</p>
+      <p class="alt" style="margin:6px 0 0">${x.vadeSay} vade · ${nf(0).format(x.toplamOi)} açık pozisyon. Varsayım: piyasa yapıcı call'da alıcı, put'ta satıcı; gerçek pozisyon bilinmez. Açık pozisyon önceki kapanıştan. Tahmindir, yön skoruna katılmaz. Yatırım tavsiyesi değildir.</p></div>`;
+    planCiz(); if (opsCiz) opsCiz();
+  }).catch(e => { if (aktif.ad === 'zincir') gexEl.innerHTML = `<div class="kart"><h2>4b. Opsiyon pozisyonlanması</h2>${hataKutusu(e)}</div>`; });
 
   // 6) Opsiyon
   const ops = $('#z-ops', main);
@@ -1083,7 +1173,7 @@ async function zincirHisse(main, t, yenile) {
     if (vade && vade !== oz.vade) oz = await zincirAl({ islem: 'opsiyon', t, vade }, 5 * 6e4, yenile);
   } catch (e) { if (aktif.ad === 'zincir') ops.innerHTML = `<div class="kart"><h2>6. Opsiyon</h2>${hataKutusu(e)}</div>`; return; }
   if (aktif.ad !== 'zincir' || kod(aktif.param) !== t) return;
-  const opsCiz = () => {
+  opsCiz = () => {
     const S = sayiMi(oz.spot) ? oz.spot : f, gun = Math.max(kalanGun(oz.vade), 1), Tt = gun / 365, r = sayiMi(gc.irx) ? gc.irx / 100 : 0.045;
     const yatay = durum.yon === 'yatay';
     const sonuc = zOpsiyonHesapla(oz, { S, T: Tt, r, yon: durum.yon, hedef: durum.hedef, stop: durum.stop, ivRank: durum.ivRank, hv20: g.hv20,
@@ -1093,6 +1183,7 @@ async function zincirHisse(main, t, yenile) {
     if (tk && tk.date >= bugunStr() && tk.date <= oz.vade) genel.push('Vade bilançoyu (' + tarihTR(tk.date) + ') kapsıyor: IV düşüşü riski.');
     if (sayiMi(gc.vix) && (gc.vix > 35 || gc.vix < 12)) genel.push('VIX ' + sayi(gc.vix) + ': 12–35 dışında → yeni kısa prim (kredi) pozisyonu açılmaz.');
     if (sonuc.canliYok) genel.push('Canlı alış/satış yok (piyasa kapalı): son işlem fiyatları kullanıldı.');
+    if (durum.gex && !durum.gex.veriYok) genel.push('GEX: ' + durum.gex.opsiyonNotu + (durum.gex.veriZayif ? ' (veri zayıf)' : ''));
     const tl = v => v === null ? 'sınırsız' : usdIsaretli(v);
     ops.innerHTML = `<div class="kart"><h2>6. Opsiyon alternatifleri</h2>
       <div class="iki"><label>Yön<select id="zo-yon"><option value="yukari"${durum.yon === 'yukari' ? ' selected' : ''}>Yukarı</option><option value="asagi"${durum.yon === 'asagi' ? ' selected' : ''}>Aşağı</option><option value="yatay"${yatay ? ' selected' : ''}>Yatay (kondor)</option></select></label>
