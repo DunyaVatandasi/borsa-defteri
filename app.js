@@ -5,7 +5,7 @@
 'use strict';
 
 // Her yayında artırın; sw.js'deki SURUM ('defter-vN') ile aynı numara olmalı.
-const UYGULAMA_SURUM = { no: 9, tarih: '28.11.2026' };
+const UYGULAMA_SURUM = { no: 10, tarih: '28.11.2026' };
 // ORB taraması: bilgisayardaki orb_tarama.ps1 sonuçları bu Apps Script web uygulamasına gönderir; uygulama buradan okur.
 const ORB_ADRES = 'https://script.google.com/macros/s/AKfycbws4zN12Rf-z-nSgukF_r9ng7J_OMvJ030WTArtojJMgU0DIkP6osCOyyYVZhre8MXIPQ/exec';
 
@@ -1223,11 +1223,36 @@ async function zincirHisse(main, t, yenile) {
 }
 
 // ---------------------------------------------------------------- INSIDER
-async function ekranInsider(main, _p, yenile) {
+const insSekme = secili => `<div class="kart" style="display:flex;gap:8px;padding:10px 12px">
+  <a class="cip${secili === 'piyasa' ? ' yesil' : ''}" href="#insider">Tüm piyasa</a><a class="cip${secili === 'portfoy' ? ' yesil' : ''}" href="#insider/portfoy">Portföyüm</a></div>`;
+
+/** Finnhub sembolsüz uç nokta: tüm şirketlerin en son ~2000 bildirimi (yaklaşık son 3–5 iş günü). Yalnız SEC Form 4, kod P/S. */
+function insiderPiyasa(r) {
+  const gorulen = new Set(), grup = new Map();
+  let ilkT = '', sonT = '';
+  ((r && r.data) || []).forEach(x => {
+    if (x.source && x.source !== 'sec') return;
+    if (x.isDerivative || !x.symbol || (x.transactionCode !== 'P' && x.transactionCode !== 'S')) return;
+    const adet = Math.abs(Number(x.change) || 0), fiyat = Number(x.transactionPrice) || 0;
+    if (!adet || !fiyat) return;
+    const tarih = x.transactionDate || x.filingDate || '';
+    const anahtar = [x.symbol, x.name, tarih, x.change, fiyat, x.transactionCode].join('|');
+    if (gorulen.has(anahtar)) return; gorulen.add(anahtar);
+    if (!ilkT || tarih < ilkT) ilkT = tarih; if (tarih > sonT) sonT = tarih;
+    const k = x.symbol + '|' + x.transactionCode;
+    const g = grup.get(k) || { t: x.symbol, kod: x.transactionCode, kisiler: new Set(), islem: 0, usd: 0, adet: 0, son: '' };
+    g.kisiler.add(x.name); g.islem++; g.usd += adet * fiyat; g.adet += adet; if (tarih > g.son) g.son = tarih;
+    grup.set(k, g);
+  });
+  return { ilkT, sonT, gruplar: [...grup.values()].map(g => ({ ...g, kisiSay: g.kisiler.size, kisiler: [...g.kisiler], ort: g.usd / g.adet })) };
+}
+
+async function ekranInsider(main, param, yenile) {
+  if (param !== 'portfoy') return ekranInsiderPiyasa(main, yenile);
   const liste = portfoySorgulari();
-  if (!liste.length) return portfoyBos(main, 'Insider özeti');
+  if (!liste.length) { portfoyBos(main, 'Insider özeti'); main.insertAdjacentHTML('afterbegin', insSekme('portfoy')); return; }
   if (!veriVarMi()) return anahtarYok(main);
-  main.innerHTML = `<div class="kart"><h2>🧑‍💼 Insider işlemleri <small>· son 90 gün, açık piyasa</small></h2><div id="ins" class="yukleniyor">Yükleniyor…</div>
+  main.innerHTML = `${insSekme('portfoy')}<div class="kart"><h2>🧑‍💼 Portföyümde insider <small>· son 90 gün, açık piyasa</small></h2><div id="ins" class="yukleniyor">Yükleniyor…</div>
     <p class="alt" style="margin:10px 0 0">Yalnızca Form 4 kodu P (alım) ve S (satış). Küme alımı = 2+ farklı yöneticinin alımı. Kendi yöntemimiz; yatırım tavsiyesi değildir.</p></div>`;
   const sonuc = [];
   for (const h of liste) {
@@ -1242,6 +1267,41 @@ async function ekranInsider(main, _p, yenile) {
         <div class="alt">${s.o ? `${s.o.alim} alım · ${s.o.satis} satış` : esc(s.hata || '')}${s.o && !s.o.alim && !s.o.satis && s.etf ? ' · ETF ise dayanak hisse ekle' : ''}</div>
         ${s.o && s.o.kume ? `<div style="margin-top:4px"><span class="cip yesil">✅ Küme alımı · ${s.o.alanSayisi} yönetici</span></div>` : ''}</div>
       <div class="sag">${s.o ? `<div class="kod ${renk(s.o.net)}">${usdIsaretli(s.o.net / 1e6, 1)} Mn</div><div class="alt">net</div>` : ''}</div></li>`).join('')}</ul>`;
+}
+
+async function ekranInsiderPiyasa(main, yenile) {
+  if (!veriVarMi()) return anahtarYok(main);
+  const f = { tur: 'P', min: 100000, ...depo.al('insFiltre', {}) };
+  main.innerHTML = `${insSekme('piyasa')}
+  <div class="kart"><h2>🧑‍💼 Tüm piyasa insider <small>· açık piyasa, son bildirimler</small></h2>
+    <div class="iki"><label>İşlem<select id="ins-tur"><option value="P"${f.tur === 'P' ? ' selected' : ''}>Alımlar</option><option value="S"${f.tur === 'S' ? ' selected' : ''}>Satışlar</option><option value="H"${f.tur === 'H' ? ' selected' : ''}>Hepsi</option></select></label>
+      <label>En az tutar<select id="ins-min">${[[0, 'Hepsi'], [25000, '25 bin $'], [100000, '100 bin $'], [1000000, '1 mn $'], [10000000, '10 mn $']].map(([v, a]) => `<option value="${v}"${f.min === v ? ' selected' : ''}>${a}</option>`).join('')}</select></label></div>
+    <div id="ins" class="yukleniyor">Yükleniyor…</div>
+    <p class="alt" style="margin:10px 0 0">Kaynak: Finnhub, SEC Form 4 (yalnız kod P = açık piyasa alımı, S = satış; ödül, opsiyon kullanımı, vergi stopajı hariç). Finnhub en son ~2000 bildirimi verir; bu yaklaşık son 3–5 iş günüdür. Form 4 işlemden sonra ~2 iş günü içinde yayınlanır. Küme alımı = aynı hissede 2+ farklı kişinin alımı. Kendi yöntemimiz; yatırım tavsiyesi değildir.</p></div>`;
+  const kutu = $('#ins', main);
+  const yenidenCiz = () => { depo.koy('insFiltre', f); ciz(); };
+  $('#ins-tur', main).onchange = e => { f.tur = e.target.value; yenidenCiz(); };
+  $('#ins-min', main).onchange = e => { f.min = Number(e.target.value); yenidenCiz(); };
+  let veri;
+  try { veri = insiderPiyasa(await fh('/stock/insider-transactions', {}, 30 * 6e4, yenile)); }
+  catch (e) { if (aktif.ad === 'insider') kutu.outerHTML = hataKutusu(e); return; }
+  if (aktif.ad !== 'insider') return;
+  const portfoyde = new Set(portfoySorgulari().map(h => h.t));
+  function ciz() {
+    const g = veri.gruplar.filter(x => (f.tur === 'H' || x.kod === f.tur) && x.usd >= f.min)
+      .sort((a, b) => (b.kod === 'P' && b.kisiSay >= 2) - (a.kod === 'P' && a.kisiSay >= 2) || b.usd - a.usd);
+    const alimSay = veri.gruplar.filter(x => x.kod === 'P').length, satisSay = veri.gruplar.filter(x => x.kod === 'S').length;
+    kutu.className = '';
+    kutu.innerHTML = `<p class="alt" style="margin:8px 0">${veri.ilkT ? tarihTR(veri.ilkT) + ' – ' + tarihTR(veri.sonT) : '—'} · ${alimSay} hissede alım, ${satisSay} hissede satış · gösterilen ${g.length}</p>
+      ${g.length ? `<ul class="liste">${g.slice(0, 150).map(x => `
+      <li class="satir" onclick="location.hash='analiz/${encodeURIComponent(x.t)}'">
+        <div class="sol"><div class="kod">${esc(x.t)} <span class="cip ${x.kod === 'P' ? 'yesil' : 'kirmizi'}">${x.kod === 'P' ? 'Alım' : 'Satış'}</span>${portfoyde.has(x.t) ? ' <span class="cip sari">portföyde</span>' : ''}</div>
+          <div class="alt">${esc(x.kisiler.slice(0, 2).join(', '))}${x.kisiSay > 2 ? ' +' + (x.kisiSay - 2) : ''}</div>
+          <div class="alt">${x.islem} işlem · ort. ${usd(x.ort)} · son ${tarihTR(x.son)}</div>
+          ${x.kod === 'P' && x.kisiSay >= 2 ? `<div style="margin-top:4px"><span class="cip yesil">✅ Küme alımı · ${x.kisiSay} kişi</span></div>` : ''}</div>
+        <div class="sag"><div class="kod ${x.kod === 'P' ? 'arti' : 'eksi'}">${x.usd >= 1e6 ? nf(1).format(x.usd / 1e6) + ' mn $' : nf(0).format(x.usd / 1e3) + ' bin $'}</div></div></li>`).join('')}</ul>` : '<p class="alt">Bu filtrelere uyan işlem yok.</p>'}`;
+  }
+  ciz();
 }
 
 // ---------------------------------------------------------------- ORB TARAMASI
@@ -1444,8 +1504,14 @@ function ornekVeri(yol, p) {
   }
   if (yol === '/stock/earnings') return ['2026-09-30', '2026-06-30', '2026-03-31', '2025-12-31'].map(d => { const e = ar(0.5, 3), a = e * ar(0.9, 1.15); return { period: d, estimate: e, actual: a, surprisePercent: (a / e - 1) * 100 }; });
   if (yol === '/calendar/earnings') { const d = gunEkle(bugunStr(), Math.floor(ar(1, 80))); return { earningsCalendar: [{ symbol: t, date: d, hour: ['bmo', 'amc', 'amc'][Math.floor(ar(0, 3))], quarter: 4, year: 2026, epsEstimate: ar(0.5, 3), revenueEstimate: ar(1e9, 3e10) }] }; }
+  if (yol === '/stock/insider-transactions' && !p.symbol) {
+    const kodlar = ['ORNA', 'ORNB', 'ORNC', 'ORND', 'ORNE', 'ORNF'], kisi = ['Örnek Kişi 1', 'Örnek Kişi 2', 'Örnek Kişi 3'];
+    return { data: Array.from({ length: 30 }, (_, i) => { const kod = r() > 0.5 ? 'P' : 'S', adet = Math.floor(ar(500, 60000));
+      return { symbol: kodlar[i % 6], name: kisi[Math.floor(ar(0, 3))], change: kod === 'P' ? adet : -adet, transactionPrice: Math.round(ar(5, 300) * 100) / 100,
+        transactionDate: gunEkle(bugunStr(), -Math.floor(ar(1, 5))), transactionCode: kod, isDerivative: false, source: 'sec' }; }) };
+  }
   if (yol === '/stock/insider-transactions') {
-    const ad = ['Örnek Yönetici A', 'Örnek Yönetici B', 'Örnek Yönetici C'];
+    const ad =['Örnek Yönetici A', 'Örnek Yönetici B', 'Örnek Yönetici C'];
     return { data: Array.from({ length: Math.floor(ar(0, 7)) }, (_, i) => ({ name: ad[i % 3], change: (r() > 0.6 ? 1 : -1) * Math.floor(ar(100, 5000)), transactionPrice: fiyat,
       transactionDate: gunEkle(bugunStr(), -Math.floor(ar(1, 85))), transactionCode: r() > 0.6 ? 'P' : 'S', isDerivative: false })).map(x => ({ ...x, change: x.transactionCode === 'P' ? Math.abs(x.change) : -Math.abs(x.change) })) };
   }
